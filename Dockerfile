@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY package.json package-lock.json ./
 
-RUN npm config set legacy-peer-deps true && npm install --production
+RUN npm install --legacy-peer-deps --production
 
 COPY . .
 
