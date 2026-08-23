@@ -3,6 +3,7 @@ FROM node:20-alpine
 WORKDIR /app
 
 COPY package.json package-lock.json ./
+COPY installer.js ./
 
 RUN npm install --legacy-peer-deps --production
 
