@@ -14,8 +14,7 @@
 - 🖼️ **DP Fetcher (`./dp`)**: Downloads high-resolution profile pictures with built-in custom DNS resolution for WhatsApp media servers (`pps.whatsapp.net`).
 - 🔍 **URL Investigator (`./investigate`)**: Captures a screenshot and metadata summary (title, description, site, resolved IPs) of any target URL — via argument or reply-quote, with `image`/`summary` modes.
 - 🎨 **WebP Sticker Converter (`./s`)**: Converts photos, videos, and media replies into square 512x512 WebP stickers using FFmpeg.
-- 🔌 **Master Switch (`./suite`)**: Pause or resume the entire engine instantly — persists across restarts.
-- 🏠 **Vault Anchor (`./home`)**: Designates a primary control chat for global command administrative overrides and logs.
+- 🔌 **Master Switch (`./suite`)**: Pause or resume the engine instantly — persists across restarts. `./track` remains available while the suite is paused.
 
 ---
 
@@ -64,9 +63,9 @@ All commands use the `./` prefix by default.
 | `./dp` | `[@user]`, `[number]`, or *(Reply)* | Download high-res profile picture | `./dp 1234567890` |
 | `./investigate` | `[url]` + `[image\|summary]`, or *(Reply)* | Screenshot + metadata summary of any URL | `./investigate https://example.com image` |
 | `./s` | *(Reply to image/video)* | Convert media into square WebP sticker | `./s` |
+| `./yt` | `audio\|video <url\|title>` | Download audio as voice note, or video up to 720p. Title mode shows a 5-option picker. | `./yt audio never gonna give you up` |
 | `./status` | None | View OS RAM, uptime, and engine health | `./status` |
-| `./suite` | `[on/off]` | Pause/resume the entire engine (persists across restarts) | `./suite off` |
-| `./home` | None | Anchor current chat as the Home Vault | `./home` |
+| `./suite` | `[on/off]` | Pause/resume the engine (the `./track` command remains available while paused) | `./suite off` |
 | `./help` or `./menu` | None | Display interactive command menu | `./help` |
 
 ---
@@ -87,13 +86,7 @@ DNS_SERVERS="8.8.8.8,1.1.1.1" npm start
 
 ## 🛠️ Network & Connection Troubleshooting
 
-If you encounter `EAI_AGAIN` or socket connection timeouts on Linux/Termux:
-
-1. Run the automatic network repair script:
-   ```bash
-   sudo ./fix-network.sh
-   ```
-2. Force public DNS resolution:
+If you encounter `EAI_AGAIN` or socket connection timeouts on Linux/Termux, force public DNS resolution:
    ```bash
    DNS_SERVERS="8.8.8.8,1.1.1.1" npm start
    ```

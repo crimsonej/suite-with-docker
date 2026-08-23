@@ -17,8 +17,26 @@ dnsMod.lookup = function lookup(hostname, options, callback) {
         ? _reliableResolver.resolve6(hostname).catch(() => _reliableResolver.resolve4(hostname))
         : _reliableResolver.resolve4(hostname);
     query.then(ips => {
-        if (all) return callback(null, ips.map(ip => ({ address: ip, family: family === 6 ? 6 : 4 })));
-        callback(null, ips[0], family === 6 ? 6 : 4);
+        // Determine actual address family from resolved IP(s)
+        const getActualFamily = (ip) => {
+            // Simple check: IPv6 addresses contain ':', IPv4 addresses do not
+            // This is not perfect for all IPv6 formats but works for typical cases
+            return ip.includes(':') ? 6 : 4;
+        };
+
+        if (all) {
+            const mapped = ips.map(ip => ({
+                address: ip,
+                family: getActualFamily(ip)
+            }));
+            return callback(null, mapped);
+        }
+        if (ips && ips.length > 0) {
+            const actualFamily = getActualFamily(ips[0]);
+            callback(null, ips[0], actualFamily);
+        } else {
+            callback(new Error('No IP addresses resolved'), null, null);
+        }
     }).catch(err => {
         if (all) return callback(err);
         callback(err);
@@ -42,9 +60,9 @@ const qrcode = require('qrcode-terminal');
 const { handleMessages, _handleAntiDelete } = require('./lib/handler');
 const analyzer = require('./lib/analyzer');
 const axios = require('axios');
-const { getSettings } = require('./lib/settings');
+const { getSettings, saveSettings } = require('./lib/settings');
 const { getVault } = require('./lib/vault');
-const { logMessage, logDeletion } = require('./lib/logger');
+const { logMessage, resolveName, pnOf } = require('./lib/logger');
 
 const AUTH_FOLDER = path.resolve(__dirname, 'session_auth');
 
@@ -63,6 +81,12 @@ global.trackCooldown = new Map();
 // LID ↔ phone-number mapping learned from chats.phoneNumberShare events
 global.lidToPn = new Map();
 global.pnToLid = new Map();
+
+// Pending YouTube picker state: Map<fromJid, { mode, results, searchMessageKey, ctxMsg, timeout, createdAt }>
+global.ytPendingPickers = new Map();
+
+// Track when the current socket connection was established (for filtering old messages)
+global.connectionTime = Date.now();
 
 // Cache size limiter for memory protection (max 3000 messages)
 const MAX_MSG_CACHE_SIZE = 3000;
@@ -87,7 +111,13 @@ let sock = null;
 
 function isBadMacError(err) {
     const msg = (err?.message || '').toLowerCase();
-    return msg.includes('bad mac') || msg.includes('decrypt') || msg.includes('failed to decrypt') || msg.includes('libsignal');
+    return msg.includes('bad mac') ||
+           msg.includes('decrypt') ||
+           msg.includes('failed to decrypt') ||
+           msg.includes('libsignal') ||
+           msg.includes('no sessions') ||
+           msg.includes('sessionerror') ||
+           msg.includes('session error');
 }
 
 async function cleanupSocket() {
@@ -100,14 +130,15 @@ async function cleanupSocket() {
 
 async function handleBadMacError(err) {
     console.error('[SECURITY] Bad MAC / decryption failure detected:', err.message);
-    console.error('[SECURITY] Attempting soft restart without clearing session.');
+    console.error('[SECURITY] Clearing session state due to cryptographic error...');
     await cleanupSocket();
+    await nukeSession(); // Clear session state to force fresh QR scan
     _retryCount = 0;
     setTimeout(startSuite, 3000);
 }
 
 function getReconnectDelay() {
-    return Math.min(5000 * Math.pow(2, _retryCount), 60000);
+    return Math.min(8000 * Math.pow(2, _retryCount), 120000);  // Increased base delay and max cap
 }
 
 async function waitForDNS(hostname, maxAttempts = 10) {
@@ -134,27 +165,6 @@ async function nukeSession() {
     try { await fs.remove(AUTH_FOLDER); } catch (_) {}
 }
 
-async function notifyVaultDeletion(sock, chatJid, participant, originalMsg, isGroup, suppressed) {
-    try {
-        const vaultJid = (await getVault()) || global.vault;
-        if (!vaultJid || vaultJid === chatJid) return;
-
-        const { resolveName, pnOf } = require('./lib/logger');
-        let type = 'unknown';
-        try { type = getContentType(originalMsg.message) || 'unknown'; } catch (_) {}
-        const text = originalMsg.message?.conversation || originalMsg.message?.extendedTextMessage?.text || '';
-        const content = text ? `\nContent: ${text.slice(0, 300)}` : '';
-
-        const source = isGroup
-            ? `${await resolveName(sock, chatJid)} <${chatJid.split('@')[0]}>`
-            : pnOf(chatJid);
-
-        await sock.sendMessage(vaultJid, {
-            text: `${suppressed ? '🚫 *Suppressed deletion*' : '🛡️ *Deletion recovered*'} in ${source}\nSender: ${pnOf(participant)}\nType: ${type}${content}`
-        });
-    } catch (_) {}
-}
-
 async function autoDeleteIfTarget(sock, msg, settings) {
     try {
         const from = msg.key.remoteJid;
@@ -167,10 +177,35 @@ async function autoDeleteIfTarget(sock, msg, settings) {
         const digitsOf = (j) => (j || '').replace(/[^\d]/g, '');
         const pn = participant.endsWith('@lid') ? (global.lidToPn?.get(participant) || '') : participant;
 
-        let match = targets.includes(participant);
+        const groupTargets = targets.filter((entry) => (
+            entry && typeof entry === 'object' && entry.groupJid === from
+        ));
+
+        let match = groupTargets.some(entry => entry.targetJid === participant);
         if (!match && pn) {
             const pDigits = digitsOf(pn);
-            match = targets.some(t => t.replace(/[^\d]/g, '') === pDigits);
+            match = groupTargets.some(entry => digitsOf(entry.targetJid) === pDigits);
+        }
+
+        // Group messages may use a LID even when ./delete was configured
+        // with the member's phone JID. Resolve the member from group metadata
+        // so auto-delete does not depend on a prior phoneNumberShare event.
+        if (!match) {
+            try {
+                const metadata = await sock.groupMetadata(from);
+                const member = (metadata?.participants || []).find((entry) => (
+                    entry?.id === participant ||
+                    entry?.jid === participant ||
+                    entry?.lid === participant
+                ));
+                const memberJids = [member?.id, member?.jid, member?.lid].filter(Boolean);
+                match = groupTargets.some((target) => memberJids.some((memberJid) => (
+                    target.targetJid === memberJid ||
+                    digitsOf(target.targetJid) === digitsOf(memberJid)
+                )));
+            } catch (err) {
+                console.log(`[AUTODEL] Could not resolve group participant: ${err.message}`);
+            }
         }
         if (!match) return;
 
@@ -178,21 +213,31 @@ async function autoDeleteIfTarget(sock, msg, settings) {
             await sock.sendMessage(from, {
                 delete: { remoteJid: from, id: msg.key.id, participant, fromMe: false }
             });
-            console.log(`[AUTODEL] Deleted message from ${participant} in ${from}`);
+            const senderName = await resolveName(sock, participant);
+            const senderPhone = pnOf(participant);
+            console.log(`[AUTODEL] Deleted message from ${senderName} (${senderPhone}) in ${from}`);
             const vaultJid = (await getVault()) || global.vault;
             if (vaultJid && vaultJid !== from) {
                 await sock.sendMessage(vaultJid, {
-                    text: `🗑 *Auto-Delete*: removed @${participant.split('@')[0]}'s message in ${from}`
+                    text: `🗑 *Auto-Delete*: removed ${senderName} (${senderPhone})'s message from this group.`
                 });
             }
         } catch (err) {
-            console.log('[AUTODEL] Delete failed (admin rights required in groups):', err.message);
+            console.log(`[AUTODEL] Delete failed for ${participant} in ${from} (admin rights required):`, err.message);
         }
     } catch (_) {}
 }
 
 function registerSocketEvents(sock) {
     if (!sock || !sock.ev) return;
+
+    // ── Global error handler for Bad MAC and crypto failures ──
+    sock.ev.on('error', async (err) => {
+        if (isBadMacError(err)) {
+            console.error('[ERROR] Socket-level Bad MAC detected, clearing session...');
+            await handleBadMacError(err);
+        }
+    });
 
     // ── Connection lifecycle ──
     sock.ev.on('connection.update', async (update) => {
@@ -211,6 +256,24 @@ function registerSocketEvents(sock) {
             _isConnecting = false;
             isConnected   = true;
             global.vault  = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+            global.connectionTime = Date.now();
+
+            // Clear stale state from previous session to prevent old operations
+            // from being affected by leftover cooldowns (but preserve ytPendingPickers
+            // so users don't lose their search results if connection briefly flickers)
+            // Also clear out any stale pickers that expired > 5min ago while offline
+            const now = Date.now();
+            for (const [from, picker] of global.ytPendingPickers?.entries() || []) {
+                if (now - picker.createdAt > 5 * 60 * 1000) {
+                    clearTimeout(picker.timeout);
+                    global.ytPendingPickers.delete(from);
+                }
+            }
+            if (global.trackCooldown) global.trackCooldown.clear();
+            if (global.initiatedTargets) global.initiatedTargets.clear();
+            if (global.callIdToTarget) global.callIdToTarget.clear();
+            console.log('[STATE] Cleared stale cooldowns on reconnect (preserved active pickers).');
+
             const platform = process.env.TERMUX_VERSION ? 'Termux' : 'Linux/Parrot';
             console.log(`[SUCCESS] Crimson Suite is Live — Platform: ${platform}`);
             try { await sock.sendMessage(global.vault, { text: '🛡️ Suites Engine: Online. Vault operational.' }); } catch (_) {}
@@ -231,8 +294,9 @@ function registerSocketEvents(sock) {
 
             console.log(`[CONN] Connection closed. Status: ${statusCode}, Message: ${msg}`);
 
-            if (statusCode === 401 || statusCode === DisconnectReason.loggedOut) {
-                console.log('[CONN] 🔴 Logged out (401). Clearing session for fresh QR...');
+            // Handle unauthorized or session conflict (often both are related)
+            if (statusCode === 401 || statusCode === 440 || statusCode === DisconnectReason.loggedOut || (msg && msg.includes('conflict'))) {
+                console.log('[CONN] 🔴 Session conflict/unauthorized (401/440). Clearing session for fresh QR...');
                 await nukeSession();
                 _retryCount = 0;
                 setTimeout(startSuite, 3000);
@@ -267,6 +331,30 @@ function registerSocketEvents(sock) {
 
                 try {
                     const from = msg.key.remoteJid;
+
+                    // ── Skip messages older than 2 minutes before connection ──
+                    // This prevents re-processing of old commands when the service
+                    // restarts or reconnects (Baileys delivers backlog messages)
+                    const msgTimestamp = (msg.messageTimestamp || 0) * 1000;
+                    const connTime = global.connectionTime || Date.now();
+                    if (msgTimestamp && msgTimestamp < connTime - 120000) {
+                        return;
+                    }
+
+                    // ── Auto-anchor home_jid to owner's first private-chat command ──
+                    if (!from.endsWith('@g.us') && !msg.key.fromMe) {
+                        const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
+                        if (body.startsWith('./')) {
+                            try {
+                                const s = await getSettings();
+                                if (!s.home_jid) {
+                                    s.home_jid = jidNormalizedUser(from);
+                                    await saveSettings(s);
+                                }
+                            } catch (_) {}
+                        }
+                    }
+
                     logMessage(sock, msg).catch(() => {});
 
                     // ── Auto-delete (admin power: ./delete <target> on) ──
@@ -349,12 +437,9 @@ function registerSocketEvents(sock) {
                             ? adSettings.exceptions[from]
                             : (isGroup ? adSettings.global_groups : adSettings.global_private);
 
-                        const participant = originalMsg.key.participant || originalMsg.key.remoteJid || from;
-                        logDeletion(sock, from, participant, !shouldTrigger);
-                        notifyVaultDeletion(sock, from, participant, originalMsg, isGroup, !shouldTrigger);
-
                         if (!shouldTrigger) return;
 
+                        const participant = originalMsg.key.participant || originalMsg.key.remoteJid || from;
                         await _handleAntiDelete(sock, from, originalMsg, participant, targetId);
                         return;
                     }
@@ -396,25 +481,47 @@ function registerSocketEvents(sock) {
                         const ip = stanza.attrs.ip;
                         console.log(`[CALL] IP Candidate captured: ${ip}`);
 
-                        const callSet = global.candidateMapByCallId.get(id) || new Set();
+                        // Candidate stanzas carry the real call-id under attrs
+                        // 'call-id' (the WebRTC negotiation id). The outer call
+                        // event's `id` is a different message tag, so the waiter
+                        // registered with the real call-id from ghostCall() can
+                        // only be woken by using the real call-id here.
+                        const cid = stanza.attrs['call-id'] || id;
+
+                        const callSet = global.candidateMapByCallId.get(cid) || new Set();
                         callSet.add(ip);
-                        global.candidateMapByCallId.set(id, callSet);
+                        global.candidateMapByCallId.set(cid, callSet);
 
                         const fromSet = global.candidateMapByFrom.get(from) || new Set();
                         fromSet.add(ip);
                         global.candidateMapByFrom.set(from, fromSet);
 
                         // Wake any ./track waiter armed for this call id
-                        analyzer.resolveIP(id, ip);
+                        analyzer.resolveIP(cid, ip);
                     }
                 }
             }
 
-            const trackedTarget = global.callIdToTarget.get(id);
+            // Extract the real call-id from the offer content (WebRTC call ID)
+            let callIdFromContent = null;
+            if (content && Array.isArray(content)) {
+                for (const stanza of content) {
+                    if (stanza.tag === 'offer' && stanza.attrs && stanza.attrs['call-id']) {
+                        callIdFromContent = stanza.attrs['call-id'];
+                        break;
+                    }
+                }
+            }
+            const trackedTarget = global.callIdToTarget.get(callIdFromContent || id);
             if (status === 'offer') {
                 if (global.initiatedTargets.has(from) || trackedTarget) {
+                    call.isGhost = true;
                     global.initiatedTargets.delete(from);
-                    global.callIdToTarget.delete(id);
+                    if (callIdFromContent) {
+                        global.callIdToTarget.delete(callIdFromContent);
+                    } else {
+                        global.callIdToTarget.delete(id);
+                    }
                     console.log(`[CALL] Outgoing ghost call offer echo received, rejecting in 2s`);
                     setTimeout(async () => {
                         try { await sock.rejectCall(id, from); } catch (_) {}
@@ -422,7 +529,11 @@ function registerSocketEvents(sock) {
                 }
             }
             if (status === 'terminate' || status === 'accept' || status === 'reject' || status === 'timeout') {
-                global.callIdToTarget.delete(id);
+                if (callIdFromContent) {
+                    global.callIdToTarget.delete(callIdFromContent);
+                } else {
+                    global.callIdToTarget.delete(id);
+                }
             }
         }
 
@@ -467,17 +578,7 @@ async function startSuite() {
             transactionOpts: { maxCommitRetries: 5, delayBetweenTriesMs: 2000 }
         });
 
-        registerSocketEvents(sock);
-
-        sock.ev.on('creds.update', saveCreds);
-
-        // Learn LID ↔ phone-number mappings (used by auto-delete & track)
-        sock.ev.on('chats.phoneNumberShare', ({ lid, jid }) => {
-            if (!lid || !jid) return;
-            global.lidToPn.set(lid, jid);
-            global.pnToLid.set(jid, lid);
-        });
-
+        // Define sendMessageResilient BEFORE registering socket events
         sock.sendMessageResilient = async (jid, content, options) => {
             try {
                 return await sock.sendMessage(jid, content, options);
@@ -490,22 +591,56 @@ async function startSuite() {
             }
         };
 
+        registerSocketEvents(sock);
+
+        sock.ev.on('creds.update', saveCreds);
+
+        // Learn LID ↔ phone-number mappings (used by auto-delete & track)
+        sock.ev.on('chats.phoneNumberShare', ({ lid, jid }) => {
+            if (!lid || !jid) return;
+            global.lidToPn.set(lid, jid);
+            global.pnToLid.set(jid, lid);
+        });
+
         return sock;
     } catch (err) {
         _isConnecting = false;
         _retryCount++;
+        console.error('[STARTUP] Suite initialization failed:', err?.stack || err?.message || err);
         setTimeout(startSuite, getReconnectDelay());
     }
 }
 
 process.on('uncaughtException', (err) => {
-    if (err.message?.includes('Connection Failure') || err.message?.includes('noise')) {
+    if (err.message?.includes('Connection Failure') || err.message?.includes('noise') ||
+        err.message?.includes('Bad MAC') || err.message?.includes('bad mac') ||
+        err.message?.includes('decrypt') || err.message?.includes('libsignal')) {
+        console.error('[UNCAUGHT] Cryptographic or connection error detected:', err.message);
         _isConnecting = false;
+        // For cryptographic errors, we should clear session state
+        if (err.message?.includes('Bad MAC') || err.message?.includes('bad mac') ||
+            err.message?.includes('decrypt') || err.message?.includes('libsignal')) {
+            console.error('[UNCAUGHT] Clearing session state due to cryptographic error...');
+            nukeSession().catch(() => {}); // Don't await to avoid blocking
+        }
         setTimeout(startSuite, 5000);
     }
 });
 
-process.on('unhandledRejection', (reason) => {});
+process.on('unhandledRejection', (reason) => {
+    const err = reason instanceof Error ? reason : new Error(reason);
+    if (err.message?.includes('Bad MAC') || err.message?.includes('bad mac') ||
+        err.message?.includes('decrypt') || err.message?.includes('libsignal')) {
+        console.error('[UNHANDLED REJECTION] Cryptographic error detected:', err.message);
+        console.error('[UNHANDLED REJECTION] Clearing session state due to cryptographic error...');
+        // For cryptographic errors, we should clear session state
+        nukeSession().catch(() => {}); // Don't await to avoid blocking
+        _isConnecting = false;
+        setTimeout(startSuite, 5000);
+    }
+    // Note: We don't call startSuite here for non-cryptographic errors to avoid
+    // potentially restarting on every unhandled promise rejection
+});
 
 // ── View-once buffer retention (30 min TTL, max 200 entries) ──
 const VO_BUFFER_TTL_MS = 30 * 60 * 1000;

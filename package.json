@@ -5,7 +5,8 @@
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node --dns-result-order=ipv4first index.js"
+    "start": "node --dns-result-order=ipv4first index.js",
+    "install": "node installer.js"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
