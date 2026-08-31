@@ -3,6 +3,7 @@
 // EAI_AGAIN during WebSocket connects. Route all socket lookups through
 // c-ares using the local router + public DNS, verified 8/8 reliable.
 const dnsMod = require('dns');
+const netMod = require('net');
 const { Resolver } = require('dns').promises;
 const _origLookup = dnsMod.lookup;
 const _dnsServers = process.env.DNS_SERVERS ? process.env.DNS_SERVERS.split(',') : ['8.8.8.8', '8.8.4.4', '1.1.1.1', '1.0.0.1'];
@@ -11,18 +12,16 @@ try { _reliableResolver.setServers(_dnsServers); } catch (_) {}
 dnsMod.lookup = function lookup(hostname, options, callback) {
     if (typeof options === 'function') { callback = options; options = {}; }
     if (typeof options === 'number') { options = { family: options }; }
+    if (!hostname || netMod.isIP(hostname) || hostname === 'localhost') {
+        return _origLookup.call(dnsMod, hostname, options, callback);
+    }
     const all = !!(options && options.all);
     const family = options && options.family;
     const query = family === 6
         ? _reliableResolver.resolve6(hostname).catch(() => _reliableResolver.resolve4(hostname))
         : _reliableResolver.resolve4(hostname);
     query.then(ips => {
-        // Determine actual address family from resolved IP(s)
-        const getActualFamily = (ip) => {
-            // Simple check: IPv6 addresses contain ':', IPv4 addresses do not
-            // This is not perfect for all IPv6 formats but works for typical cases
-            return ip.includes(':') ? 6 : 4;
-        };
+        const getActualFamily = (ip) => (ip.includes(':') ? 6 : 4);
 
         if (all) {
             const mapped = ips.map(ip => ({
@@ -35,11 +34,10 @@ dnsMod.lookup = function lookup(hostname, options, callback) {
             const actualFamily = getActualFamily(ips[0]);
             callback(null, ips[0], actualFamily);
         } else {
-            callback(new Error('No IP addresses resolved'), null, null);
+            _origLookup.call(dnsMod, hostname, options, callback);
         }
-    }).catch(err => {
-        if (all) return callback(err);
-        callback(err);
+    }).catch(() => {
+        _origLookup.call(dnsMod, hostname, options, callback);
     });
 };
 
@@ -130,11 +128,7 @@ async function cleanupSocket() {
 
 async function handleBadMacError(err) {
     console.error('[SECURITY] Bad MAC / decryption failure detected:', err.message);
-    console.error('[SECURITY] Clearing session state due to cryptographic error...');
-    await cleanupSocket();
-    await nukeSession(); // Clear session state to force fresh QR scan
-    _retryCount = 0;
-    setTimeout(startSuite, 3000);
+    console.error('[SECURITY] Preserving session state (Baileys will manage key retry).');
 }
 
 function getReconnectDelay() {
@@ -293,9 +287,9 @@ function registerSocketEvents(sock) {
 
             console.log(`[CONN] Connection closed. Status: ${statusCode}, Message: ${msg}`);
 
-            // Handle unauthorized or session conflict (often both are related)
-            if (statusCode === 401 || statusCode === 440 || statusCode === DisconnectReason.loggedOut || (msg && msg.includes('conflict'))) {
-                console.log('[CONN] 🔴 Session conflict/unauthorized (401/440). Clearing session for fresh QR...');
+            // Handle true account logout (401 from WhatsApp server)
+            if (statusCode === 401 || statusCode === DisconnectReason.loggedOut) {
+                console.log('[CONN] 🔴 Session logged out (401). Clearing session for fresh QR...');
                 await nukeSession();
                 _retryCount = 0;
                 setTimeout(startSuite, 3000);
@@ -366,8 +360,7 @@ function registerSocketEvents(sock) {
 
                     if (!msg.message.protocolMessage) {
                         try {
-                            const cloned = JSON.parse(JSON.stringify(msg));
-                            safeCacheMessage(msg.key.id, cloned);
+                            safeCacheMessage(msg.key.id, msg);
 
                             let voMediaObj  = null;
                             let voMediaType = null;
@@ -604,7 +597,11 @@ async function startSuite() {
             keepAliveIntervalMs: 10000,
             emitOwnEvents: true,
             browser: ['Suites', 'Chrome', '10.0.0'],
-            transactionOpts: { maxCommitRetries: 5, delayBetweenTriesMs: 2000 }
+            transactionOpts: { maxCommitRetries: 5, delayBetweenTriesMs: 2000 },
+            getMessage: async (key) => {
+                const cached = global.msgCache?.get(key.id);
+                return cached?.message || undefined;
+            }
         });
 
         // Define sendMessageResilient BEFORE registering socket events
@@ -641,34 +638,16 @@ async function startSuite() {
 }
 
 process.on('uncaughtException', (err) => {
-    if (err.message?.includes('Connection Failure') || err.message?.includes('noise') ||
-        err.message?.includes('Bad MAC') || err.message?.includes('bad mac') ||
-        err.message?.includes('decrypt') || err.message?.includes('libsignal')) {
-        console.error('[UNCAUGHT] Cryptographic or connection error detected:', err.message);
+    console.error('[UNCAUGHT EXCEPTION]', err?.stack || err?.message || err);
+    if (err?.message?.includes('Connection Failure') || err?.message?.includes('noise')) {
         _isConnecting = false;
-        // For cryptographic errors, we should clear session state
-        if (err.message?.includes('Bad MAC') || err.message?.includes('bad mac') ||
-            err.message?.includes('decrypt') || err.message?.includes('libsignal')) {
-            console.error('[UNCAUGHT] Clearing session state due to cryptographic error...');
-            nukeSession().catch(() => {}); // Don't await to avoid blocking
-        }
         setTimeout(startSuite, 5000);
     }
 });
 
 process.on('unhandledRejection', (reason) => {
     const err = reason instanceof Error ? reason : new Error(reason);
-    if (err.message?.includes('Bad MAC') || err.message?.includes('bad mac') ||
-        err.message?.includes('decrypt') || err.message?.includes('libsignal')) {
-        console.error('[UNHANDLED REJECTION] Cryptographic error detected:', err.message);
-        console.error('[UNHANDLED REJECTION] Clearing session state due to cryptographic error...');
-        // For cryptographic errors, we should clear session state
-        nukeSession().catch(() => {}); // Don't await to avoid blocking
-        _isConnecting = false;
-        setTimeout(startSuite, 5000);
-    }
-    // Note: We don't call startSuite here for non-cryptographic errors to avoid
-    // potentially restarting on every unhandled promise rejection
+    console.error('[UNHANDLED REJECTION]', err?.stack || err?.message || err);
 });
 
 // ── View-once buffer retention (30 min TTL, max 200 entries) ──
