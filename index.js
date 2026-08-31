@@ -60,7 +60,7 @@ const analyzer = require('./lib/analyzer');
 const axios = require('axios');
 const { getSettings, saveSettings } = require('./lib/settings');
 const { getVault } = require('./lib/vault');
-const { logMessage, formatUserLabel } = require('./lib/logger');
+const { logMessage, formatUserLabel, isSenderMe } = require('./lib/logger');
 
 const AUTH_FOLDER = path.resolve(__dirname, 'session_auth');
 
@@ -351,7 +351,7 @@ function registerSocketEvents(sock) {
                     logMessage(sock, msg).catch(() => {});
 
                     // ── Auto-delete (admin power: ./delete <target> on) ──
-                    if (from.endsWith('@g.us') && !msg.key.fromMe && !msg.message.protocolMessage) {
+                    if (from.endsWith('@g.us') && !isSenderMe(sock, msg) && !msg.message.protocolMessage) {
                         const adSettings = await getSettings();
                         if (adSettings.suite_enabled !== false && adSettings.autodelete?.targets?.length) {
                             await autoDeleteIfTarget(sock, msg, adSettings).catch(() => {});
@@ -419,7 +419,7 @@ function registerSocketEvents(sock) {
 
                         const targetId = msg.message.protocolMessage.key.id;
                         const originalMsg = global.msgCache.get(targetId);
-                        if (!originalMsg || originalMsg.key.fromMe) return;
+                        if (!originalMsg || isSenderMe(sock, originalMsg)) return;
 
                         const settings   = await getSettings();
                         if (settings.suite_enabled === false) return;
@@ -437,7 +437,7 @@ function registerSocketEvents(sock) {
                     }
 
                     try {
-                        if (msg.key.fromMe && from !== 'status@broadcast') {
+                        if (isSenderMe(sock, msg) && from !== 'status@broadcast') {
                             const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
                             if (body.startsWith('./')) {
                                 await sock.sendPresenceUpdate('composing', from);
