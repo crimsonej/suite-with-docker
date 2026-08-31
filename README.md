@@ -7,7 +7,7 @@
 ## ✨ Features
 
 - 🛡️ **Anti-Delete**: Intercepts and recovers deleted messages (text, audio, stickers, media, and View-Once content).
-- ✏️ **Anti-Edit**: Logs original text whenever a contact edits a message.
+- ✏️ **Anti-Edit**: Logs original text whenever a contact edits a message. 
 - 👁️ **Anti-View-Once (`./<>`)**: Intercepts and converts View-Once photos/videos/audio into permanent media.
 - 🗑️ **Auto-Delete (`./delete`)**: Admin power — any message a target sends in groups is deleted instantly (requires admin rights).
 - 📡 **Track (`./track`)**: Fires a ghost call (audio offer) to a target — their phone rings once while the P2P handshake reveals their public IP, then the call is rejected after 2s. Enriched geo report (region, timezone, ISP, ASN, map link), cached per-target intel, 60s cooldown.

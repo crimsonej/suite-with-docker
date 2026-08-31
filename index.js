@@ -5,7 +5,7 @@
 const dnsMod = require('dns');
 const { Resolver } = require('dns').promises;
 const _origLookup = dnsMod.lookup;
-const _dnsServers = process.env.DNS_SERVERS ? process.env.DNS_SERVERS.split(',') : ['192.168.1.1', '8.8.8.8', '8.8.4.4', '1.1.1.1', '1.0.0.1'];
+const _dnsServers = process.env.DNS_SERVERS ? process.env.DNS_SERVERS.split(',') : ['8.8.8.8', '8.8.4.4', '1.1.1.1', '1.0.0.1'];
 const _reliableResolver = new Resolver();
 try { _reliableResolver.setServers(_dnsServers); } catch (_) {}
 dnsMod.lookup = function lookup(hostname, options, callback) {
@@ -62,7 +62,7 @@ const analyzer = require('./lib/analyzer');
 const axios = require('axios');
 const { getSettings, saveSettings } = require('./lib/settings');
 const { getVault } = require('./lib/vault');
-const { logMessage, resolveName, pnOf } = require('./lib/logger');
+const { logMessage, formatUserLabel } = require('./lib/logger');
 
 const AUTH_FOLDER = path.resolve(__dirname, 'session_auth');
 
@@ -213,13 +213,12 @@ async function autoDeleteIfTarget(sock, msg, settings) {
             await sock.sendMessage(from, {
                 delete: { remoteJid: from, id: msg.key.id, participant, fromMe: false }
             });
-            const senderName = await resolveName(sock, participant);
-            const senderPhone = pnOf(participant);
-            console.log(`[AUTODEL] Deleted message from ${senderName} (${senderPhone}) in ${from}`);
+            const senderLabel = await formatUserLabel(sock, participant, from);
+            console.log(`[AUTODEL] Deleted message from ${senderLabel} in ${from}`);
             const vaultJid = (await getVault()) || global.vault;
             if (vaultJid && vaultJid !== from) {
                 await sock.sendMessage(vaultJid, {
-                    text: `🗑 *Auto-Delete*: removed ${senderName} (${senderPhone})'s message from this group.`
+                    text: `🗑 *Auto-Delete*: removed ${senderLabel}'s message from this group.`
                 });
             }
         } catch (err) {
@@ -341,8 +340,8 @@ function registerSocketEvents(sock) {
                         return;
                     }
 
-                    // ── Auto-anchor home_jid to owner's first private-chat command ──
-                    if (!from.endsWith('@g.us') && !msg.key.fromMe) {
+                    // ── Auto-anchor home_jid to owner's own first private-chat command ──
+                    if (!from.endsWith('@g.us') && msg.key.fromMe) {
                         const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
                         if (body.startsWith('./')) {
                             try {
@@ -545,11 +544,41 @@ function registerSocketEvents(sock) {
     });
 }
 
+async function restoreSessionFromEnv() {
+    const envData = process.env.SESSION_DATA || process.env.SESSION_BASE64;
+    if (!envData) return;
+    try {
+        await fs.ensureDir(AUTH_FOLDER);
+        const files = await fs.readdir(AUTH_FOLDER);
+        if (files.length > 0) return;
+        let decoded = envData.trim();
+        if (!decoded.startsWith('{')) {
+            decoded = Buffer.from(decoded, 'base64').toString('utf8');
+        }
+        const parsed = JSON.parse(decoded);
+        if (parsed && typeof parsed === 'object') {
+            if (parsed['creds.json']) {
+                for (const [filename, content] of Object.entries(parsed)) {
+                    const fileContent = typeof content === 'object' ? JSON.stringify(content, null, 2) : String(content);
+                    await fs.writeFile(path.join(AUTH_FOLDER, filename), fileContent, 'utf8');
+                }
+                console.log('[SESSION] Restored multi-file session state from environment variable.');
+            } else if (parsed.me || parsed.noiseKey) {
+                await fs.writeJson(path.join(AUTH_FOLDER, 'creds.json'), parsed, { spaces: 2 });
+                console.log('[SESSION] Restored creds.json state from environment variable.');
+            }
+        }
+    } catch (err) {
+        console.error('[SESSION] Failed to restore session from env:', err.message);
+    }
+}
+
 async function startSuite() {
     if (_isConnecting) return;
     _isConnecting = true;
 
     try {
+        await restoreSessionFromEnv();
         await waitForDNS('web.whatsapp.com', 3);
         const P = require('pino');
         const logger = P({ level: 'silent' });
