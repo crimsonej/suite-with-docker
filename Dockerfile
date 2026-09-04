@@ -23,9 +23,6 @@ COPY . .
 
 RUN chmod +x setup.sh installer.js && node installer.js
 
-# Declare volumes for persistent authentication and settings
-VOLUME ["/app/session_auth", "/app/media"]
-
 ENV NODE_ENV=production
 ENV DNS_SERVERS=8.8.8.8,8.8.4.4,1.1.1.1,1.0.0.1
 
