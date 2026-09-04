@@ -221,6 +221,38 @@ async function autoDeleteIfTarget(sock, msg, settings) {
     } catch (_) {}
 }
 
+function isStickerMsg(msg) {
+    if (!msg?.message) return false;
+    const m = msg.message;
+    if (m.stickerMessage) return true;
+    const inner = m.ephemeralMessage?.message || m.viewOnceMessage?.message || m.viewOnceMessageV2?.message || m.viewOnceMessageV2Extension?.message;
+    if (inner?.stickerMessage) return true;
+    return false;
+}
+
+async function autoDeleteIfSticker(sock, msg, settings) {
+    try {
+        const from = msg.key.remoteJid;
+        const participant = msg.key.participant || (msg.key.fromMe ? '' : from);
+        if (!from.endsWith('@g.us') || !participant || msg.key.fromMe) return;
+
+        const stickerGroups = settings.autodelete?.sticker_groups || [];
+        if (!stickerGroups.includes(from)) return;
+
+        if (!isStickerMsg(msg)) return;
+
+        try {
+            await sock.sendMessage(from, {
+                delete: { remoteJid: from, id: msg.key.id, participant, fromMe: false }
+            });
+            const senderLabel = await formatUserLabel(sock, participant, from);
+            console.log(`[AUTODEL-STICKER] Deleted sticker from ${senderLabel} in ${from}`);
+        } catch (err) {
+            console.log(`[AUTODEL-STICKER] Delete failed in ${from} (admin rights required):`, err.message);
+        }
+    } catch (_) {}
+}
+
 function registerSocketEvents(sock) {
     if (!sock || !sock.ev) return;
 
@@ -311,13 +343,40 @@ function registerSocketEvents(sock) {
 
     // ── Message pipeline ──
     const processedMessages = new Set();
+    const pendingByChat = new Map();
+    const limiterWaiters = [];
+    let activeMessageTasks = 0;
+    const MAX_ACTIVE_MESSAGE_TASKS = 4;
+
+    async function enqueueMessageTask(chatJid, task) {
+        const previous = pendingByChat.get(chatJid) || Promise.resolve();
+        const current = previous.catch(() => {}).then(async () => {
+            while (activeMessageTasks >= MAX_ACTIVE_MESSAGE_TASKS) {
+                await new Promise(resolve => limiterWaiters.push(resolve));
+            }
+            activeMessageTasks++;
+            try {
+                return await task();
+            } finally {
+                activeMessageTasks--;
+                limiterWaiters.shift()?.();
+            }
+        });
+        pendingByChat.set(chatJid, current);
+        current.then(
+            () => { if (pendingByChat.get(chatJid) === current) pendingByChat.delete(chatJid); },
+            () => { if (pendingByChat.get(chatJid) === current) pendingByChat.delete(chatJid); }
+        );
+        return current;
+    }
+
     sock.ev.removeAllListeners('messages.upsert');
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return;
 
         const tasks = messages
             .filter(msg => msg.message)
-            .map(async (msg) => {
+            .map((msg) => enqueueMessageTask(msg.key.remoteJid, async () => {
                 if (processedMessages.has(msg.key.id)) return;
                 processedMessages.add(msg.key.id);
                 setTimeout(() => processedMessages.delete(msg.key.id), 5000);
@@ -350,11 +409,16 @@ function registerSocketEvents(sock) {
 
                     logMessage(sock, msg).catch(() => {});
 
-                    // ── Auto-delete (admin power: ./delete <target> on) ──
+                    // ── Auto-delete (admin power: ./delete <target> on & ./delete sticker) ──
                     if (from.endsWith('@g.us') && !isSenderMe(sock, msg) && !msg.message.protocolMessage) {
                         const adSettings = await getSettings();
-                        if (adSettings.suite_enabled !== false && adSettings.autodelete?.targets?.length) {
-                            await autoDeleteIfTarget(sock, msg, adSettings).catch(() => {});
+                        if (adSettings.suite_enabled !== false) {
+                            if (adSettings.autodelete?.targets?.length) {
+                                await autoDeleteIfTarget(sock, msg, adSettings).catch(() => {});
+                            }
+                            if (adSettings.autodelete?.sticker_groups?.length) {
+                                await autoDeleteIfSticker(sock, msg, adSettings).catch(() => {});
+                            }
                         }
                     }
 
@@ -392,6 +456,7 @@ function registerSocketEvents(sock) {
                             }
 
                             if (voMediaObj && voMediaType) {
+                                const cloned = JSON.parse(JSON.stringify(msg));
                                 cloned._isViewOnce  = true;
                                 cloned._voMediaType = voMediaType;
                                 cloned._voMediaKey  = voMediaObj.mediaKey;
@@ -446,6 +511,11 @@ function registerSocketEvents(sock) {
                         }
                     } catch (_) {}
 
+                    const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
+                    const isProtocolMessage = !!msg.message.protocolMessage;
+                    const isPendingPickerReply = global.ytPendingPickers?.has(from) && /^\s*[1-5]\s*$/.test(body);
+                    if (!isProtocolMessage && !body.startsWith('./') && !isPendingPickerReply) return;
+
                     try {
                         await handleMessages(sock, msg);
                     } catch (handlerErr) {
@@ -454,7 +524,7 @@ function registerSocketEvents(sock) {
                 } catch (msgErr) {
                     if (isBadMacError(msgErr)) await handleBadMacError(msgErr);
                 }
-            });
+            }));
 
         await Promise.allSettled(tasks);
     });

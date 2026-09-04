@@ -17,3 +17,4 @@ env
 .env.test
 .env.production
 .banner
+session_auth

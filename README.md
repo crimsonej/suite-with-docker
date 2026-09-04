@@ -76,11 +76,24 @@ All commands use the `./` prefix by default.
 | :--- | :--- | :--- |
 | `DNS_SERVERS` | `8.8.8.8,8.8.4.4,1.1.1.1,1.0.0.1` | Comma-separated public DNS servers to resolve WhatsApp servers and bypass local DNS blocks |
 | `IPINFO_TOKEN` | *(None)* | Optional API token for [ipinfo.io](https://ipinfo.io) geolocation lookup fallback |
+| `YT_COOKIES_PATH` | `./cookies.txt` | Path to Netscape format `cookies.txt` file for YouTube downloads on VPS |
+| `YT_COOKIES` | *(None)* | Raw Netscape cookie content string for YouTube download authentication |
+| `YT_PO_TOKEN` | *(None)* | Proof of Origin token for YouTube downloads on restricted VPS IPs |
 
 Example usage:
 ```bash
 DNS_SERVERS="8.8.8.8,1.1.1.1" npm start
 ```
+
+---
+
+## 🍪 YouTube Downloading on VPS (Bypassing Cookie / Bot Restrictions)
+
+YouTube blocks many datacenter IP ranges (AWS, DigitalOcean, Hetzner, etc.) with bot challenges or sign-in requirements. Suites automatically falls back to lightweight embedded player clients (`tv_embedded`, `ios`, `android`), but for restricted VPS servers, you can provide cookies:
+
+1. Export YouTube cookies in **Netscape format** using browser extensions (e.g., *Get cookies.txt LOCALLY* for Chrome/Firefox).
+2. Save the file as `cookies.txt` in the root folder of Suites (or set `YT_COOKIES_PATH=/path/to/cookies.txt`).
+3. Alternatively, set the environment variable `YT_COOKIES` with the file's raw text content.
 
 ---
 

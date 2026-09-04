@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  suites:
+    build: .
+    container_name: suites_whatsapp_bot
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    environment:
+      - NODE_ENV=production
+      - DNS_SERVERS=8.8.8.8,8.8.4.4,1.1.1.1,1.0.0.1
+      # - YT_COOKIES_PATH=/app/cookies.txt
+      # - YT_PO_TOKEN=
+      # - IPINFO_TOKEN=
+    volumes:
+      - ./session_auth:/app/session_auth
+      - ./media:/app/media
+      # - ./cookies.txt:/app/cookies.txt:ro

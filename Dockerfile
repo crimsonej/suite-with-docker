@@ -2,16 +2,27 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-RUN apk add --no-cache ffmpeg yt-dlp
+# Install system dependencies: FFmpeg, Python3, ca-certificates, tzdata, curl, bash
+RUN apk add --no-cache \
+    ffmpeg \
+    python3 \
+    ca-certificates \
+    tzdata \
+    curl \
+    bash \
+    && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+    && chmod a+rx /usr/local/bin/yt-dlp
 
 COPY package.json package-lock.json ./
-COPY installer.js ./
 
-RUN npm install --legacy-peer-deps --production
+RUN npm ci --only=production --legacy-peer-deps || npm install --legacy-peer-deps --production
 
 COPY . .
 
 RUN chmod +x setup.sh installer.js
+
+# Declare volumes for persistent authentication and settings
+VOLUME ["/app/session_auth", "/app/media"]
 
 ENV NODE_ENV=production
 ENV DNS_SERVERS=8.8.8.8,8.8.4.4,1.1.1.1,1.0.0.1
