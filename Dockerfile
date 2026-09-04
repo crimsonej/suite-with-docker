@@ -10,16 +10,16 @@ RUN apk add --no-cache \
     tzdata \
     curl \
     bash \
-    && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+    && curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
     && chmod a+rx /usr/local/bin/yt-dlp
 
 COPY package.json package-lock.json ./
 
-RUN npm ci --only=production --legacy-peer-deps || npm install --legacy-peer-deps --production
+RUN npm ci --omit=dev --legacy-peer-deps --ignore-scripts
 
 COPY . .
 
-RUN chmod +x setup.sh installer.js
+RUN chmod +x setup.sh installer.js && node installer.js
 
 # Declare volumes for persistent authentication and settings
 VOLUME ["/app/session_auth", "/app/media"]
