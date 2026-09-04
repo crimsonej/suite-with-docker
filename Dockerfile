@@ -1,15 +1,17 @@
-FROM node:20-alpine
+FROM node:20-bookworm-slim
 
 WORKDIR /app
 
 # Install system dependencies: FFmpeg, Python3, ca-certificates, tzdata, curl, bash
-RUN apk add --no-cache \
-    ffmpeg \
-    python3 \
-    ca-certificates \
-    tzdata \
-    curl \
-    bash \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ffmpeg \
+        python3 \
+        ca-certificates \
+        tzdata \
+        curl \
+        bash \
+    && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
     && chmod a+rx /usr/local/bin/yt-dlp
 
