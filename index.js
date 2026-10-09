@@ -62,7 +62,7 @@ const { getSettings, saveSettings } = require('./lib/settings');
 const { getVault } = require('./lib/vault');
 const { logMessage, formatUserLabel, isSenderMe } = require('./lib/logger');
 
-const AUTH_FOLDER = path.resolve(__dirname, 'session_auth');
+const AUTH_FOLDER = process.env.SESSION_DIR || process.env.AUTH_FOLDER || path.resolve(__dirname, 'session_auth');
 
 global.botStartTime = Math.floor(Date.now() / 1000);
 global.lastMessageWithIP = null;
@@ -86,8 +86,8 @@ global.ytPendingPickers = new Map();
 // Track when the current socket connection was established (for filtering old messages)
 global.connectionTime = Date.now();
 
-// Cache size limiter for memory protection (max 3000 messages)
-const MAX_MSG_CACHE_SIZE = 3000;
+// Cache size limiter for memory protection
+const MAX_MSG_CACHE_SIZE = parseInt(process.env.MAX_MSG_CACHE_SIZE, 10) || 3000;
 function safeCacheMessage(id, msg) {
     if (global.msgCache.size >= MAX_MSG_CACHE_SIZE) {
         const firstKey = global.msgCache.keys().next().value;
@@ -95,6 +95,20 @@ function safeCacheMessage(id, msg) {
     }
     global.msgCache.set(id, msg);
 }
+
+// In-memory retry counter cache to prevent decryption/MAC failures during re-keying
+const msgRetryMap = new Map();
+const msgRetryCounterCache = {
+    get: (key) => msgRetryMap.get(key),
+    set: (key, val) => {
+        if (msgRetryMap.size > 2000) {
+            const first = msgRetryMap.keys().next().value;
+            msgRetryMap.delete(first);
+        }
+        msgRetryMap.set(key, val);
+    },
+    del: (key) => msgRetryMap.delete(key)
+};
 
 // Shared DNS resolver using verified-reliable servers
 const sharedResolver = new Resolver();
@@ -104,7 +118,7 @@ sharedResolver.setServers(dnsServers);
 let _isConnecting = false;
 let isConnected = false;
 let _retryCount = 0;
-const MAX_RETRIES = 15;
+const MAX_RETRIES = parseInt(process.env.MAX_RETRIES, 10) || 15;
 let sock = null;
 
 function isBadMacError(err) {
@@ -299,7 +313,28 @@ function registerSocketEvents(sock) {
             if (global.callIdToTarget) global.callIdToTarget.clear();
             console.log('[STATE] Cleared stale cooldowns on reconnect (preserved active pickers).');
 
-            const platform = process.env.TERMUX_VERSION ? 'Termux' : 'Linux/Parrot';
+function getPlatformName() {
+    if (process.env.TERMUX_VERSION || (process.env.PREFIX && process.env.PREFIX.includes('com.termux'))) {
+        return 'Termux';
+    }
+    let osName = '';
+    try {
+        if (fs.existsSync('/etc/os-release')) {
+            const content = fs.readFileSync('/etc/os-release', 'utf8');
+            const match = content.match(/^PRETTY_NAME="?([^"\n]+)"?/m) || content.match(/^NAME="?([^"\n]+)"?/m);
+            if (match) osName = match[1];
+        }
+    } catch (_) {}
+    if (!osName) {
+        osName = `${os.type()} ${os.arch()}`;
+    }
+    if (fs.existsSync('/.dockerenv')) {
+        return `Docker (${osName})`;
+    }
+    return osName;
+}
+
+            const platform = getPlatformName();
             console.log(`[SUCCESS] Crimson Suite is Live — Platform: ${platform}`);
             try { await sock.sendMessage(global.vault, { text: '🛡️ Suites Engine: Online. Vault operational.' }); } catch (_) {}
         }
@@ -393,10 +428,13 @@ function registerSocketEvents(sock) {
                         return;
                     }
 
+                    const appSettings = await getSettings().catch(() => ({}));
+                    const activePrefix = appSettings?.prefix || process.env.PREFIX || './';
+
                     // ── Auto-anchor home_jid to owner's own first private-chat command ──
                     if (!from.endsWith('@g.us') && msg.key.fromMe) {
                         const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
-                        if (body.startsWith('./')) {
+                        if (body.startsWith(activePrefix)) {
                             try {
                                 const s = await getSettings();
                                 if (!s.home_jid) {
@@ -409,9 +447,9 @@ function registerSocketEvents(sock) {
 
                     logMessage(sock, msg).catch(() => {});
 
-                    // ── Auto-delete (admin power: ./delete <target> on & ./delete sticker) ──
+                    // ── Auto-delete (admin power: auto-delete targets & stickers) ──
                     if (from.endsWith('@g.us') && !isSenderMe(sock, msg) && !msg.message.protocolMessage) {
-                        const adSettings = await getSettings();
+                        const adSettings = appSettings.suite_enabled !== undefined ? appSettings : await getSettings();
                         if (adSettings.suite_enabled !== false) {
                             if (adSettings.autodelete?.targets?.length) {
                                 await autoDeleteIfTarget(sock, msg, adSettings).catch(() => {});
@@ -504,7 +542,7 @@ function registerSocketEvents(sock) {
                     try {
                         if (isSenderMe(sock, msg) && from !== 'status@broadcast') {
                             const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
-                            if (body.startsWith('./')) {
+                            if (body.startsWith(activePrefix)) {
                                 await sock.sendPresenceUpdate('composing', from);
                                 setTimeout(() => sock.sendPresenceUpdate('paused', from).catch(() => {}), 1500);
                             }
@@ -514,7 +552,7 @@ function registerSocketEvents(sock) {
                     const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
                     const isProtocolMessage = !!msg.message.protocolMessage;
                     const isPendingPickerReply = global.ytPendingPickers?.has(from) && /^\s*[1-5]\s*$/.test(body);
-                    if (!isProtocolMessage && !body.startsWith('./') && !isPendingPickerReply) return;
+                    if (!isProtocolMessage && !body.startsWith(activePrefix) && !isPendingPickerReply) return;
 
                     try {
                         await handleMessages(sock, msg);
@@ -659,6 +697,7 @@ async function startSuite() {
             shouldSyncHistoryMessage: () => false,
             markOnlineOnConnect: true,
             generateHighQualityLinkPreview: false,
+            msgRetryCounterCache,
             msgRetryCounter: 5,
             retryRequestDelayMs: 2000,
             maxMsgRetryCount: 5,
@@ -666,13 +705,38 @@ async function startSuite() {
             defaultQueryTimeoutMs: 60000,
             keepAliveIntervalMs: 10000,
             emitOwnEvents: true,
-            browser: ['Suites', 'Chrome', '10.0.0'],
+            browser: [process.env.BOT_NAME || 'Suites', 'Chrome', '10.0.0'],
             transactionOpts: { maxCommitRetries: 5, delayBetweenTriesMs: 2000 },
             getMessage: async (key) => {
+                if (!key || !key.id) return undefined;
                 const cached = global.msgCache?.get(key.id);
-                return cached?.message || undefined;
+                if (!cached) return undefined;
+                if (cached.message) return cached.message;
+                return cached;
             }
         });
+
+        // ── Auto-cache all sent messages into msgCache to prevent "Waiting for message" on sender device ──
+        const _origSendMessage = sock.sendMessage.bind(sock);
+        sock.sendMessage = async (jid, content, options) => {
+            const sent = await _origSendMessage(jid, content, options);
+            if (sent && sent.key && sent.key.id) {
+                safeCacheMessage(sent.key.id, sent);
+                const editKey = content?.edit || content?.protocolMessage?.key;
+                if (editKey && editKey.id) {
+                    const targetMsg = global.msgCache.get(editKey.id);
+                    if (targetMsg) {
+                        targetMsg.message = {
+                            conversation: typeof content.text === 'string' ? content.text : '',
+                            extendedTextMessage: { text: typeof content.text === 'string' ? content.text : '' },
+                            ...content
+                        };
+                        safeCacheMessage(editKey.id, targetMsg);
+                    }
+                }
+            }
+            return sent;
+        };
 
         // Define sendMessageResilient BEFORE registering socket events
         sock.sendMessageResilient = async (jid, content, options) => {
