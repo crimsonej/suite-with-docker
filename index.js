@@ -121,6 +121,10 @@ let _retryCount = 0;
 const MAX_RETRIES = parseInt(process.env.MAX_RETRIES, 10) || 15;
 let sock = null;
 
+function getReconnectDelay() {
+    return Math.min(1000 * Math.pow(2, Math.max(1, _retryCount)), 30000);
+}
+
 function isBadMacError(err) {
     const msg = (err?.message || '').toLowerCase();
     return msg.includes('bad mac') ||
