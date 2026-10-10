@@ -144,9 +144,30 @@ async function cleanupSocket() {
     sock = null;
 }
 
+let _badMacDebounceTimer = null;
 async function handleBadMacError(err) {
     console.error('[SECURITY] Bad MAC / decryption failure detected:', err.message);
-    console.error('[SECURITY] Preserving session state (Baileys will manage key retry).');
+    if (_badMacDebounceTimer) return;
+    _badMacDebounceTimer = setTimeout(async () => {
+        _badMacDebounceTimer = null;
+        try {
+            if (fs.existsSync(AUTH_FOLDER)) {
+                const files = await fs.readdir(AUTH_FOLDER);
+                let cleaned = 0;
+                for (const file of files) {
+                    if ((file.startsWith('session-') || file.startsWith('pre-key-') || file.startsWith('sender-key-')) && file !== 'creds.json') {
+                        await fs.remove(path.join(AUTH_FOLDER, file));
+                        cleaned++;
+                    }
+                }
+                if (cleaned > 0) {
+                    console.log(`[SECURITY] Cleared ${cleaned} out-of-sync session keys (preserved creds.json). Signal ratchets will auto-repair.`);
+                }
+            }
+        } catch (e) {
+            console.error('[SECURITY] Session key purge failed:', e.message);
+        }
+    }, 5000);
 }
 
 function getPlatformName() {
@@ -358,6 +379,14 @@ function registerSocketEvents(sock) {
                 await nukeSession();
                 _retryCount = 0;
                 setTimeout(startSuite, 3000);
+                return;
+            }
+
+            // Handle dual-instance conflict (440 Stream Errored / connectionReplaced)
+            if (statusCode === 440 || statusCode === DisconnectReason.connectionReplaced) {
+                console.log('[CONN] 🔴 Connection replaced (440). Conflict: Another bot instance is active using this session!');
+                console.log('[CONN] ⏸️ Cooling down 30s to prevent instance collision loop...');
+                setTimeout(startSuite, 30000);
                 return;
             }
 
