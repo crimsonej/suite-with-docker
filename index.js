@@ -145,8 +145,25 @@ async function handleBadMacError(err) {
     console.error('[SECURITY] Preserving session state (Baileys will manage key retry).');
 }
 
-function getReconnectDelay() {
-    return Math.min(8000 * Math.pow(2, _retryCount), 120000);  // Increased base delay and max cap
+function getPlatformName() {
+    if (process.env.TERMUX_VERSION || (process.env.PREFIX && process.env.PREFIX.includes('com.termux'))) {
+        return 'Termux';
+    }
+    let osName = '';
+    try {
+        if (fs.existsSync('/etc/os-release')) {
+            const content = fs.readFileSync('/etc/os-release', 'utf8');
+            const match = content.match(/^PRETTY_NAME="?([^"\n]+)"?/m) || content.match(/^NAME="?([^"\n]+)"?/m);
+            if (match) osName = match[1];
+        }
+    } catch (_) {}
+    if (!osName) {
+        osName = `${os.type()} ${os.arch()}`;
+    }
+    if (fs.existsSync('/.dockerenv')) {
+        return `Docker (${osName})`;
+    }
+    return osName;
 }
 
 async function waitForDNS(hostname, maxAttempts = 10) {
@@ -195,9 +212,6 @@ async function autoDeleteIfTarget(sock, msg, settings) {
             match = groupTargets.some(entry => digitsOf(entry.targetJid) === pDigits);
         }
 
-        // Group messages may use a LID even when ./delete was configured
-        // with the member's phone JID. Resolve the member from group metadata
-        // so auto-delete does not depend on a prior phoneNumberShare event.
         if (!match) {
             try {
                 const metadata = await sock.groupMetadata(from);
@@ -222,11 +236,12 @@ async function autoDeleteIfTarget(sock, msg, settings) {
                 delete: { remoteJid: from, id: msg.key.id, participant, fromMe: false }
             });
             const senderLabel = await formatUserLabel(sock, participant, from);
-            console.log(`[AUTODEL] Deleted message from ${senderLabel} in ${from}`);
+            const groupName = await resolveName(sock, from);
+            console.log(`[AUTODEL] Deleted message from ${senderLabel} in ${groupName}`);
             const vaultJid = (await getVault()) || global.vault;
             if (vaultJid && vaultJid !== from) {
                 await sock.sendMessage(vaultJid, {
-                    text: `🗑 *Auto-Delete*: removed ${senderLabel}'s message from this group.`
+                    text: `🗑 *Auto-Delete*: removed ${senderLabel}'s message in *${groupName}*.`
                 });
             }
         } catch (err) {
@@ -260,7 +275,8 @@ async function autoDeleteIfSticker(sock, msg, settings) {
                 delete: { remoteJid: from, id: msg.key.id, participant, fromMe: false }
             });
             const senderLabel = await formatUserLabel(sock, participant, from);
-            console.log(`[AUTODEL-STICKER] Deleted sticker from ${senderLabel} in ${from}`);
+            const groupName = await resolveName(sock, from);
+            console.log(`[AUTODEL-STICKER] Deleted sticker from ${senderLabel} in ${groupName}`);
         } catch (err) {
             console.log(`[AUTODEL-STICKER] Delete failed in ${from} (admin rights required):`, err.message);
         }
@@ -294,13 +310,10 @@ function registerSocketEvents(sock) {
             _retryCount   = 0;
             _isConnecting = false;
             isConnected   = true;
-            global.vault  = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+            global.vault  = jidNormalizedUser(sock.user.id);
             global.connectionTime = Date.now();
 
             // Clear stale state from previous session to prevent old operations
-            // from being affected by leftover cooldowns (but preserve ytPendingPickers
-            // so users don't lose their search results if connection briefly flickers)
-            // Also clear out any stale pickers that expired > 5min ago while offline
             const now = Date.now();
             for (const [from, picker] of global.ytPendingPickers?.entries() || []) {
                 if (now - picker.createdAt > 5 * 60 * 1000) {
@@ -313,27 +326,6 @@ function registerSocketEvents(sock) {
             if (global.callIdToTarget) global.callIdToTarget.clear();
             console.log('[STATE] Cleared stale cooldowns on reconnect (preserved active pickers).');
 
-function getPlatformName() {
-    if (process.env.TERMUX_VERSION || (process.env.PREFIX && process.env.PREFIX.includes('com.termux'))) {
-        return 'Termux';
-    }
-    let osName = '';
-    try {
-        if (fs.existsSync('/etc/os-release')) {
-            const content = fs.readFileSync('/etc/os-release', 'utf8');
-            const match = content.match(/^PRETTY_NAME="?([^"\n]+)"?/m) || content.match(/^NAME="?([^"\n]+)"?/m);
-            if (match) osName = match[1];
-        }
-    } catch (_) {}
-    if (!osName) {
-        osName = `${os.type()} ${os.arch()}`;
-    }
-    if (fs.existsSync('/.dockerenv')) {
-        return `Docker (${osName})`;
-    }
-    return osName;
-}
-
             const platform = getPlatformName();
             console.log(`[SUCCESS] Crimson Suite is Live — Platform: ${platform}`);
             try { await sock.sendMessage(global.vault, { text: '🛡️ Suites Engine: Online. Vault operational.' }); } catch (_) {}
@@ -342,6 +334,8 @@ function getPlatformName() {
         if (connection === 'close') {
             _isConnecting = false;
             isConnected   = false;
+            await cleanupSocket();
+
             const error = lastDisconnect?.error;
             const statusCode = error?.output?.statusCode || error?.data || (error instanceof Boom ? error.output.statusCode : 0);
             const msg = error?.message || '';
@@ -703,7 +697,7 @@ async function startSuite() {
             maxMsgRetryCount: 5,
             connectTimeoutMs: 60000,
             defaultQueryTimeoutMs: 60000,
-            keepAliveIntervalMs: 10000,
+            keepAliveIntervalMs: 25000,
             emitOwnEvents: true,
             browser: [process.env.BOT_NAME || 'Suites', 'Chrome', '10.0.0'],
             transactionOpts: { maxCommitRetries: 5, delayBetweenTriesMs: 2000 },
@@ -719,7 +713,8 @@ async function startSuite() {
         // ── Auto-cache all sent messages into msgCache to prevent "Waiting for message" on sender device ──
         const _origSendMessage = sock.sendMessage.bind(sock);
         sock.sendMessage = async (jid, content, options) => {
-            const sent = await _origSendMessage(jid, content, options);
+            const normJid = jid ? jidNormalizedUser(jid) : jid;
+            const sent = await _origSendMessage(normJid, content, options);
             if (sent && sent.key && sent.key.id) {
                 safeCacheMessage(sent.key.id, sent);
                 const editKey = content?.edit || content?.protocolMessage?.key;
