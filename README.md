@@ -63,6 +63,10 @@ All commands use the `./` prefix by default.
 | `./dp` | `[@user]`, `[number]`, or *(Reply)* | Download high-res profile picture | `./dp 1234567890` |
 | `./investigate` | `[url]` + `[image\|summary]`, or *(Reply)* | Screenshot + metadata summary of any URL | `./investigate https://example.com image` |
 | `./s` | *(Reply to image/video)* | Convert media into square WebP sticker | `./s` |
+| `./s ./ai image` | `<prompt>` | **Stacked Pipe**: Generate AI image and directly output as a sticker | `./s ./ai image a green frog` |
+| `./ai` | `[prompt]` | Fast concise Q&A via NVIDIA Nemotron; running without prompt shows AI status & model health | `./ai` or `./ai who was nikola tesla` |
+| `./AI` | `<prompt>` | **Stealth Q&A**: Edits message to `...` then directly outputs answer (no header) | `./AI who was nikola tesla` |
+| `./ai image` | `<prompt>` | High-resolution image generation via NVIDIA Flux | `./ai image cyber frog in pond` |
 | `./yt` | `audio\|video <url\|title>` | Download audio as voice note, or video up to 720p. Title mode shows a 5-option picker. | `./yt audio never gonna give you up` |
 | `./status` | None | View OS RAM, uptime, and engine health | `./status` |
 | `./session` | None | Export/sync session keys to avoid scanning QR again | `./session` |
@@ -75,6 +79,10 @@ All commands use the `./` prefix by default.
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
+| `NVIDIA_API_KEY` | *(None)* | **Required for AI**: API Key from NVIDIA NIM / Build portal |
+| `NVIDIA_BASE_URL` | `https://integrate.api.nvidia.com/v1` | Base URL for OpenAI-compatible NVIDIA chat completions |
+| `NVIDIA_AI_MODEL` | `nvidia/nemotron-3-ultra-550b-a55b` | Model identifier for text queries |
+| `NVIDIA_IMAGE_INVOKE_URL` | `https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b` | Invoke URL for Flux image generation |
 | `SESSION_DATA` | *(None)* | Base64-encoded WhatsApp session keys (avoids QR scan on fresh deploys) |
 | `RAILWAY_API_TOKEN` | *(None)* | Railway Personal Access Token. When set, the bot **automatically saves** its session into Railway variables on first QR scan! |
 | `DNS_SERVERS` | `8.8.8.8,8.8.4.4,1.1.1.1,1.0.0.1` | Comma-separated public DNS servers to resolve WhatsApp servers and bypass local DNS blocks |

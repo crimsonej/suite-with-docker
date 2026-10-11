@@ -849,6 +849,11 @@ async function startSuite() {
 
     try {
         await restoreSessionFromEnv();
+        if (!process.env.NVIDIA_API_KEY) {
+            console.log('[AI CONFIG] ℹ️ NVIDIA_API_KEY is not set. Set it in Railway variables to enable ./ai and ./ai image.');
+        } else {
+            console.log(`[AI CONFIG] ✓ NVIDIA AI configured (Model: ${process.env.NVIDIA_AI_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b'})`);
+        }
         await waitForDNS('web.whatsapp.com', 3);
         const P = require('pino');
         const logger = P({ level: 'silent' });

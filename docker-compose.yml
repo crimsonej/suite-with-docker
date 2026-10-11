@@ -10,7 +10,14 @@ services:
     environment:
       - NODE_ENV=production
       - DNS_SERVERS=8.8.8.8,8.8.4.4,1.1.1.1,1.0.0.1
+      # - NVIDIA_API_KEY=
+      # - NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
+      # - NVIDIA_AI_MODEL=nvidia/nemotron-3-ultra-550b-a55b
+      # - NVIDIA_IMAGE_INVOKE_URL=https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b
+      # - RAILWAY_API_TOKEN=
+      # - SESSION_DATA=
       # - YT_COOKIES_PATH=/app/cookies.txt
+      # - YT_COOKIES=
       # - YT_PO_TOKEN=
       # - IPINFO_TOKEN=
     volumes:
