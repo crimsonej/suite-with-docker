@@ -145,8 +145,19 @@ async function cleanupSocket() {
 }
 
 async function handleBadMacError(err) {
-    console.error('[SECURITY] Bad MAC / decryption failure detected:', err.message);
-    console.error('[SECURITY] Preserving session state (Baileys will manage key retry).');
+    console.error('[SECURITY] Bad MAC / decryption failure detected:', err?.message || err);
+    try {
+        const text = (err?.stack || '') + ' ' + (err?.message || '');
+        const match = text.match(/async\s+([a-zA-Z0-9_\-\.]+)\s+\[as\s+awaitable\]/i) || text.match(/session-([a-zA-Z0-9_\-\.]+)\.json/i);
+        if (match && match[1]) {
+            const brokenSessionId = match[1];
+            const sessionFile = path.join(AUTH_FOLDER, `session-${brokenSessionId}.json`);
+            if (await fs.pathExists(sessionFile)) {
+                await fs.remove(sessionFile);
+                console.log(`[SECURITY] 🛡️ Removed desynced session file session-${brokenSessionId}.json to force a fresh cryptographic re-key.`);
+            }
+        }
+    } catch (_) {}
 }
 
 function getPlatformName() {
@@ -951,6 +962,10 @@ process.on('uncaughtException', (err) => {
 
 process.on('unhandledRejection', (reason) => {
     const err = reason instanceof Error ? reason : new Error(reason);
+    if (isBadMacError(err)) {
+        handleBadMacError(err).catch(() => {});
+        return;
+    }
     console.error('[UNHANDLED REJECTION]', err?.stack || err?.message || err);
 });
 
