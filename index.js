@@ -665,6 +665,7 @@ function registerSocketEvents(sock) {
                     const quotedStanzaId = contextInfo?.stanzaId;
                     const quotedText = contextInfo?.quotedMessage?.conversation || contextInfo?.quotedMessage?.extendedTextMessage?.text || '';
                     const isReplyingToAI = isAiMessage(quotedStanzaId, quotedText);
+                    const isCallingRuby = /\bruby\b/i.test(body);
                     const isRubyAuto = !!appSettings?.ruby_auto_respond && !from.endsWith('@g.us') && !msg.key.fromMe;
 
                     if (!isProtocolMessage && !body.startsWith(activePrefix) && !isPendingPickerReply && !isCallingRuby && !isReplyingToAI && !isRubyAuto) return;
