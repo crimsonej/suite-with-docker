@@ -89,11 +89,19 @@ DNS_SERVERS="8.8.8.8,1.1.1.1" npm start
 
 ## 🍪 YouTube Downloading on VPS (Bypassing Cookie / Bot Restrictions)
 
-YouTube blocks many datacenter IP ranges (AWS, DigitalOcean, Hetzner, etc.) with bot challenges or sign-in requirements. Suites automatically falls back to lightweight embedded player clients (`tv_embedded`, `ios`, `android`), but for restricted VPS servers, you can provide cookies:
+YouTube blocks many datacenter IP ranges (Railway, AWS, DigitalOcean, Hetzner, etc.) with bot challenges or sign-in requirements. Suites automatically falls back to lightweight embedded player clients (`tv_embedded`, `ios`, `android`), but for restricted VPS servers, you can provide cookies in **any format**:
 
-1. Export YouTube cookies in **Netscape format** using browser extensions (e.g., *Get cookies.txt LOCALLY* for Chrome/Firefox).
-2. Save the file as `cookies.txt` in the root folder of Suites (or set `YT_COOKIES_PATH=/path/to/cookies.txt`).
-3. Alternatively, set the environment variable `YT_COOKIES` with the file's raw text content.
+- **JSON Format**: Exported directly from browser extensions (e.g. *Cookie-Editor*, *EditThisCookie* on mobile or desktop).
+- **HTTP Header String**: Copied from browser DevTools / cURL / mobile network requests (`LOGIN_INFO=...; SID=...`).
+- **Base64 String**: Any encoded cookie string (avoids multiline/tab issues when pasting into Railway or `.env`).
+- **Netscape Format**: Standard `cookies.txt` or space-separated lines.
+
+You can supply them either by:
+1. Setting the environment variable `YT_COOKIES` in Railway or `.env`.
+2. Placing a `cookies.txt` file in the root directory (or pointing `YT_COOKIES_PATH` to it).
+
+The engine automatically detects the format and normalizes it for `yt-dlp`.
+
 
 ---
 
