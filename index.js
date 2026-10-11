@@ -56,6 +56,7 @@ const path = require('path');
 const dns = require('dns').promises;
 const qrcode = require('qrcode-terminal');
 const { handleMessages, _handleAntiDelete } = require('./lib/handler');
+const { isAiMessage } = require('./lib/ai');
 const analyzer = require('./lib/analyzer');
 const axios = require('axios');
 const { getSettings, saveSettings } = require('./lib/settings');
@@ -564,10 +565,24 @@ function registerSocketEvents(sock) {
                         }
                     } catch (_) {}
 
-                    const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
+                    let msgContent = msg.message;
+                    if (msgContent?.ephemeralMessage?.message) msgContent = msgContent.ephemeralMessage.message;
+                    if (msgContent?.viewOnceMessageV2?.message) msgContent = msgContent.viewOnceMessageV2.message;
+                    if (msgContent?.viewOnceMessage?.message) msgContent = msgContent.viewOnceMessage.message;
+                    if (msgContent?.documentWithCaptionMessage?.message) msgContent = msgContent.documentWithCaptionMessage.message;
+
+                    const body = msgContent?.conversation || msgContent?.extendedTextMessage?.text || msgContent?.imageMessage?.caption || msgContent?.videoMessage?.caption || '';
                     const isProtocolMessage = !!msg.message.protocolMessage;
                     const isPendingPickerReply = global.ytPendingPickers?.has(from) && /^\s*[1-5]\s*$/.test(body);
-                    if (!isProtocolMessage && !body.startsWith(activePrefix) && !isPendingPickerReply) return;
+
+                    const contextInfo = msgContent?.extendedTextMessage?.contextInfo || msg.message?.extendedTextMessage?.contextInfo;
+                    const quotedStanzaId = contextInfo?.stanzaId;
+                    const quotedText = contextInfo?.quotedMessage?.conversation || contextInfo?.quotedMessage?.extendedTextMessage?.text || '';
+                    const isReplyingToAI = isAiMessage(quotedStanzaId, quotedText);
+                    const isCallingRuby = /\bruby\b/i.test(body);
+                    const isRubyAuto = !!appSettings?.ruby_auto_respond;
+
+                    if (!isProtocolMessage && !body.startsWith(activePrefix) && !isPendingPickerReply && !isCallingRuby && !isReplyingToAI && !isRubyAuto) return;
 
                     try {
                         await handleMessages(sock, msg);
