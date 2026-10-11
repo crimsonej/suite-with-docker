@@ -65,6 +65,7 @@ All commands use the `./` prefix by default.
 | `./s` | *(Reply to image/video)* | Convert media into square WebP sticker | `./s` |
 | `./yt` | `audio\|video <url\|title>` | Download audio as voice note, or video up to 720p. Title mode shows a 5-option picker. | `./yt audio never gonna give you up` |
 | `./status` | None | View OS RAM, uptime, and engine health | `./status` |
+| `./session` | None | Export/sync session keys to avoid scanning QR again | `./session` |
 | `./suite` | `[on/off]` | Pause/resume the engine (the `./track` command remains available while paused) | `./suite off` |
 | `./help` or `./menu` | None | Display interactive command menu | `./help` |
 
@@ -74,10 +75,12 @@ All commands use the `./` prefix by default.
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
+| `SESSION_DATA` | *(None)* | Base64-encoded WhatsApp session keys (avoids QR scan on fresh deploys) |
+| `RAILWAY_API_TOKEN` | *(None)* | Railway Personal Access Token. When set, the bot **automatically saves** its session into Railway variables on first QR scan! |
 | `DNS_SERVERS` | `8.8.8.8,8.8.4.4,1.1.1.1,1.0.0.1` | Comma-separated public DNS servers to resolve WhatsApp servers and bypass local DNS blocks |
 | `IPINFO_TOKEN` | *(None)* | Optional API token for [ipinfo.io](https://ipinfo.io) geolocation lookup fallback |
-| `YT_COOKIES_PATH` | `./cookies.txt` | Path to Netscape format `cookies.txt` file for YouTube downloads on VPS |
-| `YT_COOKIES` | *(None)* | Raw Netscape cookie content string for YouTube download authentication |
+| `YT_COOKIES_PATH` | `./cookies.txt` | Path to cookies file for YouTube downloads |
+| `YT_COOKIES` | *(None)* | YouTube cookies in any format (JSON, header string, Base64, or Netscape) |
 | `YT_PO_TOKEN` | *(None)* | Proof of Origin token for YouTube downloads on restricted VPS IPs |
 
 Example usage:

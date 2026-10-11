@@ -192,6 +192,12 @@ async function waitForDNS(hostname, maxAttempts = 10) {
 async function nukeSession() {
     console.log('[SESSION] Logged out — clearing session for fresh QR...');
     try { await fs.remove(AUTH_FOLDER); } catch (_) {}
+    delete process.env.SESSION_DATA;
+    delete process.env.SESSION_BASE64;
+    _hasSyncedSession = false;
+    if (typeof deleteRailwaySessionVariable === 'function') {
+        await deleteRailwaySessionVariable().catch(() => {});
+    }
 }
 
 async function autoDeleteIfTarget(sock, msg, settings) {
@@ -333,6 +339,17 @@ function registerSocketEvents(sock) {
             const platform = getPlatformName();
             console.log(`[SUCCESS] Crimson Suite is Live — Platform: ${platform}`);
             try { await sock.sendMessage(global.vault, { text: '🛡️ Suites Engine: Online. Vault operational.' }); } catch (_) {}
+
+            // Auto-sync session keys after initial scan if not already restored from environment
+            if (!_hasSyncedSession) {
+                setTimeout(async () => {
+                    try {
+                        await syncSessionAfterScan(sock);
+                    } catch (err) {
+                        console.error('[SESSION] Auto-sync error:', err.message);
+                    }
+                }, 4000);
+            }
         }
 
         if (connection === 'close') {
@@ -643,13 +660,18 @@ function registerSocketEvents(sock) {
     });
 }
 
+let _hasSyncedSession = false;
+
 async function restoreSessionFromEnv() {
     const envData = process.env.SESSION_DATA || process.env.SESSION_BASE64;
     if (!envData) return;
     try {
         await fs.ensureDir(AUTH_FOLDER);
         const files = await fs.readdir(AUTH_FOLDER);
-        if (files.length > 0) return;
+        if (files.length > 0) {
+            _hasSyncedSession = true;
+            return;
+        }
         let decoded = envData.trim();
         if (!decoded.startsWith('{')) {
             decoded = Buffer.from(decoded, 'base64').toString('utf8');
@@ -666,11 +688,160 @@ async function restoreSessionFromEnv() {
                 await fs.writeJson(path.join(AUTH_FOLDER, 'creds.json'), parsed, { spaces: 2 });
                 console.log('[SESSION] Restored creds.json state from environment variable.');
             }
+            _hasSyncedSession = true;
         }
     } catch (err) {
         console.error('[SESSION] Failed to restore session from env:', err.message);
     }
 }
+
+async function exportSessionBundle() {
+    try {
+        const credsPath = path.join(AUTH_FOLDER, 'creds.json');
+        if (!fs.existsSync(credsPath)) return null;
+
+        const files = await fs.readdir(AUTH_FOLDER);
+        const bundle = {};
+        for (const file of files) {
+            if (file.endsWith('.json')) {
+                const filePath = path.join(AUTH_FOLDER, file);
+                try {
+                    bundle[file] = await fs.readJson(filePath);
+                } catch (_) {
+                    try {
+                        bundle[file] = await fs.readFile(filePath, 'utf8');
+                    } catch (_) {}
+                }
+            }
+        }
+        if (!bundle['creds.json']) return null;
+        return Buffer.from(JSON.stringify(bundle)).toString('base64');
+    } catch (err) {
+        console.error('[SESSION] Error bundling session files:', err.message);
+        return null;
+    }
+}
+
+async function deleteRailwaySessionVariable() {
+    const token = process.env.RAILWAY_API_TOKEN || process.env.RAILWAY_TOKEN;
+    const projectId = process.env.RAILWAY_PROJECT_ID;
+    const environmentId = process.env.RAILWAY_ENVIRONMENT_ID;
+    const serviceId = process.env.RAILWAY_SERVICE_ID;
+
+    if (!token || !projectId || !environmentId) return;
+    try {
+        const query = `
+            mutation variableDelete($input: VariableDeleteInput!) {
+                variableDelete(input: $input)
+            }
+        `;
+        const variables = {
+            input: {
+                projectId,
+                environmentId,
+                serviceId: serviceId || undefined,
+                name: 'SESSION_DATA'
+            }
+        };
+        await axios.post('https://backboard.railway.com/graphql/v2', {
+            query,
+            variables
+        }, {
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            },
+            timeout: 10000
+        });
+        console.log('[RAILWAY] Removed stale SESSION_DATA variable from Railway.');
+    } catch (_) {}
+}
+
+async function syncSessionAfterScan(targetSock, isManual = false) {
+    if (_hasSyncedSession && !isManual) return;
+    const activeSock = targetSock || sock;
+    const base64Data = await exportSessionBundle();
+    if (!base64Data) return null;
+    _hasSyncedSession = true;
+
+    // Cache in local process so subsequent calls within this run know it exists
+    process.env.SESSION_DATA = base64Data;
+
+    const token = process.env.RAILWAY_API_TOKEN || process.env.RAILWAY_TOKEN;
+    const projectId = process.env.RAILWAY_PROJECT_ID;
+    const environmentId = process.env.RAILWAY_ENVIRONMENT_ID;
+    const serviceId = process.env.RAILWAY_SERVICE_ID;
+
+    let syncedToRailway = false;
+
+    if (token && projectId && environmentId) {
+        console.log('[RAILWAY] Syncing SESSION_DATA to Railway variables via API...');
+        try {
+            const query = `
+                mutation variableUpsert($input: VariableUpsertInput!) {
+                    variableUpsert(input: $input)
+                }
+            `;
+            const variables = {
+                input: {
+                    projectId,
+                    environmentId,
+                    serviceId: serviceId || undefined,
+                    name: 'SESSION_DATA',
+                    value: base64Data
+                }
+            };
+            const res = await axios.post('https://backboard.railway.com/graphql/v2', {
+                query,
+                variables
+            }, {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                timeout: 15000
+            });
+
+            if (res.data?.data?.variableUpsert) {
+                syncedToRailway = true;
+                console.log('[RAILWAY] ✅ Successfully wrote SESSION_DATA to Railway variables!');
+            } else {
+                console.error('[RAILWAY] API variableUpsert response:', JSON.stringify(res.data?.errors || res.data));
+            }
+        } catch (apiErr) {
+            console.error('[RAILWAY] API request failed:', apiErr?.response?.data || apiErr.message);
+        }
+    }
+
+    const vaultJid = (await getVault()) || global.vault;
+
+    if (syncedToRailway) {
+        if (activeSock && vaultJid) {
+            await activeSock.sendMessage(vaultJid, {
+                text: '🛡️ *Railway Auto-Save Active*\n\n✅ Your session was automatically saved to Railway variables (`SESSION_DATA`).\n\nYou will *not* need to scan the QR code on future deployments!'
+            }).catch(() => {});
+        }
+    } else {
+        console.log('[SESSION] First scan completed. Session bundle generated.');
+        console.log('[RAILWAY TIP] Set RAILWAY_API_TOKEN in Railway variables for automatic saving, or add a Volume at /app/session_auth.');
+
+        if (activeSock && vaultJid) {
+            try {
+                await activeSock.sendMessage(vaultJid, {
+                    text: '🛡️ *First Scan Completed!*\n\nTo skip scanning the QR code on future Railway deployments, either:\n\n1️⃣ *Automatic (Recommended)*: Add `RAILWAY_API_TOKEN` to your Railway variables so the bot auto-saves its session directly.\n2️⃣ *Railway Volume*: Attach a Persistent Volume mounted at `/app/session_auth`.\n3️⃣ *Manual*: Set `SESSION_DATA` in Railway variables with the key below:'
+                });
+                await activeSock.sendMessage(vaultJid, {
+                    text: base64Data
+                });
+            } catch (_) {}
+        }
+    }
+
+    return { syncedToRailway, base64Data };
+}
+
+global.exportSessionBundle = exportSessionBundle;
+global.syncSessionAfterScan = syncSessionAfterScan;
 
 async function startSuite() {
     if (_isConnecting) return;
