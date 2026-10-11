@@ -63,6 +63,81 @@ const { getSettings, saveSettings } = require('./lib/settings');
 const { getVault } = require('./lib/vault');
 const { logMessage, formatUserLabel, isSenderMe } = require('./lib/logger');
 
+// ── Suppress noisy Baileys/libsignal session debug spam ──
+// libsignal uses console.info("Closing session:", session), console.warn, etc.
+// These flood Railway with 500+ logs/sec causing CPU starvation, rate-limit drops, and bot freezing
+const _origConsoleLog = console.log;
+const _origConsoleInfo = console.info;
+const _origConsoleWarn = console.warn;
+const _origConsoleError = console.error;
+const _origConsoleDebug = console.debug;
+
+const _noisePatterns = [
+    /Closing session/i,
+    /Opening session/i,
+    /Removing old closed session/i,
+    /Session already closed/i,
+    /Session already open/i,
+    /SessionEntry/,
+    /Decrypted message with closed session/i,
+    /Closing open session in favor of/i,
+    /Migrating session to/i,
+    /Got new sender key/i,
+    /sender key not found/i,
+    /Retrying.*signal/i,
+    /session not found for/i,
+    /No sessions/i,
+    /ratchet step/i,
+    /PreKeyMessage/i,
+    /got prekey bundle/i,
+    /Unhandled bucket type/i,
+    /Failed to decrypt message with any known session/i,
+    /Session error:/i,
+    /\[Signal\]/i,
+    /\[Noise\]/i
+];
+
+function _isNoisyLog(args) {
+    if (!args || !args.length) return false;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (!a) continue;
+        if (typeof a === 'string') {
+            if (_noisePatterns.some(p => p.test(a))) return true;
+        } else if (typeof a === 'object') {
+            if (a.constructor?.name === 'SessionEntry' || a._chains || a.currentRatchet || a.pendingPreKey) {
+                return true;
+            }
+            try {
+                const s = typeof a.toString === 'function' ? a.toString() : '';
+                if (s && _noisePatterns.some(p => p.test(s))) return true;
+            } catch (_) {}
+        }
+    }
+    return false;
+}
+
+console.log = function(...args) {
+    if (_isNoisyLog(args)) return;
+    _origConsoleLog.apply(console, args);
+};
+console.info = function(...args) {
+    if (_isNoisyLog(args)) return;
+    _origConsoleInfo.apply(console, args);
+};
+console.warn = function(...args) {
+    if (_isNoisyLog(args)) return;
+    _origConsoleWarn.apply(console, args);
+};
+console.error = function(...args) {
+    if (_isNoisyLog(args)) return;
+    _origConsoleError.apply(console, args);
+};
+console.debug = function(...args) {
+    if (_isNoisyLog(args)) return;
+    _origConsoleDebug.apply(console, args);
+};
+
 const AUTH_FOLDER = process.env.SESSION_DIR || process.env.AUTH_FOLDER || path.resolve(__dirname, 'session_auth');
 
 global.botStartTime = Math.floor(Date.now() / 1000);
@@ -88,7 +163,7 @@ global.ytPendingPickers = new Map();
 global.connectionTime = Date.now();
 
 // Cache size limiter for memory protection
-const MAX_MSG_CACHE_SIZE = parseInt(process.env.MAX_MSG_CACHE_SIZE, 10) || 3000;
+const MAX_MSG_CACHE_SIZE = parseInt(process.env.MAX_MSG_CACHE_SIZE, 10) || 2000;
 function safeCacheMessage(id, msg) {
     if (global.msgCache.size >= MAX_MSG_CACHE_SIZE) {
         const firstKey = global.msgCache.keys().next().value;
@@ -396,6 +471,17 @@ function registerSocketEvents(sock) {
     const processedMessages = new Set();
     const pendingByChat = new Map();
     const limiterWaiters = [];
+
+    // Periodic memory cleanup for processedMessages
+    setInterval(() => {
+        if (processedMessages.size > 500) processedMessages.clear();
+        // Clean up resolved promises from pendingByChat
+        for (const [key, val] of pendingByChat) {
+            if (val && typeof val.then === 'function') {
+                val.then(() => pendingByChat.delete(key)).catch(() => pendingByChat.delete(key));
+            }
+        }
+    }, 30000);
     let activeMessageTasks = 0;
     const MAX_ACTIVE_MESSAGE_TASKS = 4;
 
@@ -444,7 +530,7 @@ function registerSocketEvents(sock) {
                         return;
                     }
 
-                    const appSettings = await getSettings().catch(() => ({}));
+                    const appSettings = await getSettings();
                     const activePrefix = appSettings?.prefix || process.env.PREFIX || './';
 
                     // ── Auto-anchor home_jid to owner's own first private-chat command ──
@@ -465,7 +551,7 @@ function registerSocketEvents(sock) {
 
                     // ── Auto-delete (admin power: auto-delete targets & stickers) ──
                     if (from.endsWith('@g.us') && !isSenderMe(sock, msg) && !msg.message.protocolMessage) {
-                        const adSettings = appSettings.suite_enabled !== undefined ? appSettings : await getSettings();
+                        const adSettings = appSettings;
                         if (adSettings.suite_enabled !== false) {
                             if (adSettings.autodelete?.targets?.length) {
                                 await autoDeleteIfTarget(sock, msg, adSettings).catch(() => {});
@@ -579,8 +665,7 @@ function registerSocketEvents(sock) {
                     const quotedStanzaId = contextInfo?.stanzaId;
                     const quotedText = contextInfo?.quotedMessage?.conversation || contextInfo?.quotedMessage?.extendedTextMessage?.text || '';
                     const isReplyingToAI = isAiMessage(quotedStanzaId, quotedText);
-                    const isCallingRuby = /\bruby\b/i.test(body);
-                    const isRubyAuto = !!appSettings?.ruby_auto_respond;
+                    const isRubyAuto = !!appSettings?.ruby_auto_respond && !from.endsWith('@g.us') && !msg.key.fromMe;
 
                     if (!isProtocolMessage && !body.startsWith(activePrefix) && !isPendingPickerReply && !isCallingRuby && !isReplyingToAI && !isRubyAuto) return;
 
@@ -995,6 +1080,35 @@ function pruneViewOnceBuffer() {
 }
 pruneViewOnceBuffer();
 setInterval(pruneViewOnceBuffer, 10 * 60 * 1000);
+
+// ── Global memory pressure relief (every 5 minutes) ──
+setInterval(() => {
+    let cleaned = 0;
+    // Prune msgCache to 1500 if oversized
+    while (global.msgCache.size > 1500) {
+        const firstKey = global.msgCache.keys().next().value;
+        global.msgCache.delete(firstKey);
+        cleaned++;
+    }
+    // Prune LID maps
+    if (global.lidToPn.size > 5000) {
+        const iter = global.lidToPn.keys();
+        for (let i = 0; i < 1000; i++) { const k = iter.next().value; global.lidToPn.delete(k); global.pnToLid.delete(k); }
+        cleaned += 1000;
+    }
+    // Prune candidate maps
+    if (global.candidateMapByCallId.size > 100) { global.candidateMapByCallId.clear(); cleaned++; }
+    if (global.candidateMapByFrom.size > 100) { global.candidateMapByFrom.clear(); cleaned++; }
+    // Prune retry map
+    if (msgRetryMap.size > 500) {
+        const iter = msgRetryMap.keys();
+        for (let i = 0; i < 200; i++) msgRetryMap.delete(iter.next().value);
+        cleaned += 200;
+    }
+    if (cleaned > 0) console.log(`[MEM] Pruned ${cleaned} stale cache entries.`);
+    // Force GC if available
+    if (global.gc) { try { global.gc(); } catch (_) {} }
+}, 5 * 60 * 1000);
 
 // ── Status media retention (keep last 7 days, prune daily) ──
 const STATUS_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
