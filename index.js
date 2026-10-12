@@ -472,24 +472,22 @@ function registerSocketEvents(sock) {
     const pendingByChat = new Map();
     const limiterWaiters = [];
 
-    // Periodic memory cleanup for processedMessages
-    setInterval(() => {
-        if (processedMessages.size > 500) processedMessages.clear();
-        // Clean up resolved promises from pendingByChat
-        for (const [key, val] of pendingByChat) {
-            if (val && typeof val.then === 'function') {
-                val.then(() => pendingByChat.delete(key)).catch(() => pendingByChat.delete(key));
-            }
-        }
-    }, 30000);
     let activeMessageTasks = 0;
-    const MAX_ACTIVE_MESSAGE_TASKS = 4;
+    const configuredConcurrency = Number.parseInt(process.env.MESSAGE_CONCURRENCY, 10);
+    const MAX_ACTIVE_MESSAGE_TASKS = Number.isFinite(configuredConcurrency)
+        ? Math.max(1, Math.min(configuredConcurrency, 32))
+        : 16;
 
     async function enqueueMessageTask(chatJid, task) {
+        const enqueuedAt = Date.now();
         const previous = pendingByChat.get(chatJid) || Promise.resolve();
         const current = previous.catch(() => {}).then(async () => {
             while (activeMessageTasks >= MAX_ACTIVE_MESSAGE_TASKS) {
                 await new Promise(resolve => limiterWaiters.push(resolve));
+            }
+            const queueWaitMs = Date.now() - enqueuedAt;
+            if (queueWaitMs >= 10000) {
+                console.warn(`[MESSAGE QUEUE] Waited ${(queueWaitMs / 1000).toFixed(1)}s for ${chatJid}; active=${activeMessageTasks}, queuedChats=${pendingByChat.size}`);
             }
             activeMessageTasks++;
             try {
@@ -674,9 +672,11 @@ function registerSocketEvents(sock) {
                         await handleMessages(sock, msg);
                     } catch (handlerErr) {
                         if (isBadMacError(handlerErr)) await handleBadMacError(handlerErr);
+                        else console.error(`[MESSAGE HANDLER] Failed for ${from} message ${msg.key.id}:`, handlerErr?.stack || handlerErr?.message || handlerErr);
                     }
                 } catch (msgErr) {
                     if (isBadMacError(msgErr)) await handleBadMacError(msgErr);
+                    else console.error(`[MESSAGE PIPELINE] Failed for ${msg.key.remoteJid} message ${msg.key.id}:`, msgErr?.stack || msgErr?.message || msgErr);
                 }
             }));
 

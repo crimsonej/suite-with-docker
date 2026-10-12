@@ -83,6 +83,7 @@ All commands use the `./` prefix by default.
 | `NVIDIA_BASE_URL` | `https://integrate.api.nvidia.com/v1` | Base URL for OpenAI-compatible NVIDIA chat completions |
 | `NVIDIA_AI_MODEL` | `nvidia/nemotron-3-ultra-550b-a55b` | Model identifier for text queries |
 | `NVIDIA_IMAGE_INVOKE_URL` | `https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b` | Invoke URL for Flux image generation |
+| `DATA_DIR` | `./media` | Directory for persistent settings, Ruby activity history, and vault state. Set to `/data` when using a Railway Volume. |
 | `SESSION_DATA` | *(None)* | Base64-encoded WhatsApp session keys (avoids QR scan on fresh deploys) |
 | `RAILWAY_API_TOKEN` | *(None)* | Railway Personal Access Token. When set, the bot **automatically saves** its session into Railway variables on first QR scan! |
 | `DNS_SERVERS` | `8.8.8.8,8.8.4.4,1.1.1.1,1.0.0.1` | Comma-separated public DNS servers to resolve WhatsApp servers and bypass local DNS blocks |
@@ -95,6 +96,16 @@ Example usage:
 ```bash
 DNS_SERVERS="8.8.8.8,1.1.1.1" npm start
 ```
+
+### Persisting settings and activity history on Railway
+
+Railway's container filesystem is temporary unless a Persistent Volume is attached. To keep settings such as feature toggles, auto-delete targets, the Ruby activity log, and the vault JID across redeploys:
+
+1. Attach a Railway Volume to the service at `/data`.
+2. Set the service variable `DATA_DIR=/data`.
+3. Redeploy once. If `/data` is empty, Suites copies the existing `media/settings.json` and `media/vault.json` there on first startup; later changes are saved directly to the volume.
+
+Keep the existing `/app/session_auth` volume or `SESSION_DATA` setup for WhatsApp authentication. `DATA_DIR` persists application settings and does not replace session persistence.
 
 ---
 
