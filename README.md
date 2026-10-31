@@ -91,6 +91,13 @@ All commands use the `./` prefix by default.
 | `YT_COOKIES_PATH` | `./cookies.txt` | Path to cookies file for YouTube downloads |
 | `YT_COOKIES` | *(None)* | YouTube cookies in any format (JSON, header string, Base64, or Netscape) |
 | `YT_PO_TOKEN` | *(None)* | Proof of Origin token for YouTube downloads on restricted VPS IPs |
+| `MAX_MEDIA_DOWNLOAD_BYTES` | `33554432` | Maximum bytes buffered while recovering media from WhatsApp (32 MB) |
+| `MAX_MEDIA_INPUT_BYTES` | `33554432` | Maximum input size accepted by the sticker converter (32 MB) |
+| `MAX_YT_AUDIO_BYTES` | `209715200` | Maximum downloaded YouTube audio size (200 MB) |
+| `MAX_VIDEO_BYTES_INLINE` | `16777216` | Maximum YouTube video size sent inline (16 MB) |
+| `MAX_VIDEO_BYTES_DOC` | `209715200` | Maximum YouTube video size sent as a document (200 MB) |
+| `INVESTIGATE_MAX_PAGE_BYTES` | `2097152` | Maximum page response downloaded for URL summaries (2 MB) |
+| `INVESTIGATE_MAX_IMAGE_BYTES` | `8388608` | Maximum screenshot response downloaded (8 MB) |
 
 Example usage:
 ```bash
