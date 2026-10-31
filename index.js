@@ -57,7 +57,6 @@ const dns = require('dns').promises;
 const qrcode = require('qrcode-terminal');
 const { handleMessages, _handleAntiDelete } = require('./lib/handler');
 const { isAiMessage } = require('./lib/ai');
-const analyzer = require('./lib/analyzer');
 const axios = require('axios');
 const { getSettings, saveSettings } = require('./lib/settings');
 const { getVault } = require('./lib/vault');
@@ -144,13 +143,6 @@ global.botStartTime = Math.floor(Date.now() / 1000);
 global.lastMessageWithIP = null;
 global.msgCache = new Map();
 global.viewOnceBufferCache = new Map();
-
-// Candidate maps for P2P handshake tracking
-global.candidateMapByCallId = new Map();
-global.candidateMapByFrom = new Map();
-global.initiatedTargets = new Set();
-global.callIdToTarget = new Map();
-global.trackCooldown = new Map();
 
 // LID ↔ phone-number mapping learned from chats.phoneNumberShare events
 global.lidToPn = new Map();
@@ -407,9 +399,6 @@ function registerSocketEvents(sock) {
                     global.ytPendingPickers.delete(from);
                 }
             }
-            if (global.trackCooldown) global.trackCooldown.clear();
-            if (global.initiatedTargets) global.initiatedTargets.clear();
-            if (global.callIdToTarget) global.callIdToTarget.clear();
             console.log('[STATE] Cleared stale cooldowns on reconnect (preserved active pickers).');
 
             const platform = getPlatformName();
@@ -683,82 +672,7 @@ function registerSocketEvents(sock) {
         await Promise.allSettled(tasks);
     });
 
-    // ── Unified Call & WebRTC Candidate Handler ──
-    sock.ev.on('call', async (calls) => {
-        const callList = Array.isArray(calls) ? calls : [calls];
 
-        for (const call of callList) {
-            const { from, id, status, content } = call;
-            console.log(`[CALL] Call ID: ${id} | Status: ${status} | From: ${from}`);
-            
-            if (content && Array.isArray(content)) {
-                for (const stanza of content) {
-                    if (stanza.tag === 'candidate' && stanza.attrs && stanza.attrs.ip) {
-                        const ip = stanza.attrs.ip;
-                        console.log(`[CALL] IP Candidate captured: ${ip}`);
-
-                        // Candidate stanzas carry the real call-id under attrs
-                        // 'call-id' (the WebRTC negotiation id). The outer call
-                        // event's `id` is a different message tag, so the waiter
-                        // registered with the real call-id from ghostCall() can
-                        // only be woken by using the real call-id here.
-                        const cid = stanza.attrs['call-id'] || id;
-
-                        const callSet = global.candidateMapByCallId.get(cid) || new Set();
-                        callSet.add(ip);
-                        global.candidateMapByCallId.set(cid, callSet);
-
-                        const fromSet = global.candidateMapByFrom.get(from) || new Set();
-                        fromSet.add(ip);
-                        global.candidateMapByFrom.set(from, fromSet);
-
-                        // Wake any ./track waiter armed for this call id
-                        analyzer.resolveIP(cid, ip);
-                    }
-                }
-            }
-
-            // Extract the real call-id from the offer content (WebRTC call ID)
-            let callIdFromContent = null;
-            if (content && Array.isArray(content)) {
-                for (const stanza of content) {
-                    if (stanza.tag === 'offer' && stanza.attrs && stanza.attrs['call-id']) {
-                        callIdFromContent = stanza.attrs['call-id'];
-                        break;
-                    }
-                }
-            }
-            const trackedTarget = global.callIdToTarget.get(callIdFromContent || id);
-            if (status === 'offer') {
-                if (global.initiatedTargets.has(from) || trackedTarget) {
-                    call.isGhost = true;
-                    global.initiatedTargets.delete(from);
-                    if (callIdFromContent) {
-                        global.callIdToTarget.delete(callIdFromContent);
-                    } else {
-                        global.callIdToTarget.delete(id);
-                    }
-                    console.log(`[CALL] Outgoing ghost call offer echo received, rejecting in 2s`);
-                    setTimeout(async () => {
-                        try { await sock.rejectCall(id, from); } catch (_) {}
-                    }, 2000);
-                }
-            }
-            if (status === 'terminate' || status === 'accept' || status === 'reject' || status === 'timeout') {
-                if (callIdFromContent) {
-                    global.callIdToTarget.delete(callIdFromContent);
-                } else {
-                    global.callIdToTarget.delete(id);
-                }
-            }
-        }
-
-        // ── Auto-track is always armed, regardless of ./suite state ──
-        try {
-            const analyzerFn = require('./lib/analyzer').analyzer;
-            await analyzerFn(sock, callList);
-        } catch (_) {}
-    });
 }
 
 let _hasSyncedSession = false;
@@ -1031,7 +945,7 @@ async function startSuite() {
 
         sock.ev.on('creds.update', saveCreds);
 
-        // Learn LID ↔ phone-number mappings (used by auto-delete & track)
+        // Learn LID ↔ phone-number mappings (used by group auto-delete)
         sock.ev.on('chats.phoneNumberShare', ({ lid, jid }) => {
             if (!lid || !jid) return;
             global.lidToPn.set(lid, jid);
@@ -1097,9 +1011,6 @@ setInterval(() => {
         for (let i = 0; i < 1000; i++) { const k = iter.next().value; global.lidToPn.delete(k); global.pnToLid.delete(k); }
         cleaned += 1000;
     }
-    // Prune candidate maps
-    if (global.candidateMapByCallId.size > 100) { global.candidateMapByCallId.clear(); cleaned++; }
-    if (global.candidateMapByFrom.size > 100) { global.candidateMapByFrom.clear(); cleaned++; }
     // Prune retry map
     if (msgRetryMap.size > 500) {
         const iter = msgRetryMap.keys();

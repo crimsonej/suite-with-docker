@@ -10,11 +10,10 @@
 - ✏️ **Anti-Edit**: Logs original text whenever a contact edits a message. 
 - 👁️ **Anti-View-Once (`./<>`)**: Intercepts and converts View-Once photos/videos/audio into permanent media.
 - 🗑️ **Auto-Delete (`./delete`)**: Admin power — any message a target sends in groups is deleted instantly (requires admin rights).
-- 📡 **Track (`./track`)**: Fires a ghost call (audio offer) to a target — their phone rings once while the P2P handshake reveals their public IP, then the call is rejected after 2s. Enriched geo report (region, timezone, ISP, ASN, map link), cached per-target intel, 60s cooldown.
 - 🖼️ **DP Fetcher (`./dp`)**: Downloads high-resolution profile pictures with built-in custom DNS resolution for WhatsApp media servers (`pps.whatsapp.net`).
 - 🔍 **URL Investigator (`./investigate`)**: Captures a screenshot and metadata summary (title, description, site, resolved IPs) of any target URL — via argument or reply-quote, with `image`/`summary` modes.
 - 🎨 **WebP Sticker Converter (`./s`)**: Converts photos, videos, and media replies into square 512x512 WebP stickers using FFmpeg.
-- 🔌 **Master Switch (`./suite`)**: Pause or resume the engine instantly — persists across restarts. `./track` remains available while the suite is paused.
+- 🔌 **Master Switch (`./suite`)**: Pause or resume the engine instantly — persists across restarts.
 
 ---
 
@@ -59,7 +58,6 @@ All commands use the `./` prefix by default.
 | `./antiedit` | `[on/off]` / `groups [on/off]` | Toggle edited message diff capturing | `./antiedit on` |
 | `./<>` | *(Reply to View-Once media)* | Convert View-Once media into permanent media | `./<>` |
 | `./delete` | `[number\|jid] on/off`, *(Reply)* | Auto-delete every message a target sends (groups, admin required) | `./delete 1234567890 on` |
-| `./track` | `[number\|jid]` | Ghost-call probe: captures target's public IP via P2P handshake + geo report | `./track +256755930447` |
 | `./dp` | `[@user]`, `[number]`, or *(Reply)* | Download high-res profile picture | `./dp 1234567890` |
 | `./investigate` | `[url]` + `[image\|summary]`, or *(Reply)* | Screenshot + metadata summary of any URL | `./investigate https://example.com image` |
 | `./s` | *(Reply to image/video)* | Convert media into square WebP sticker | `./s` |
@@ -67,10 +65,11 @@ All commands use the `./` prefix by default.
 | `./ai` | `[prompt]` | Fast concise Q&A via NVIDIA Nemotron; running without prompt shows AI status & model health | `./ai` or `./ai who was nikola tesla` |
 | `./AI` | `<prompt>` | **Stealth Q&A**: Edits message to `...` then directly outputs answer (no header) | `./AI who was nikola tesla` |
 | `./ai image` | `<prompt>` | High-resolution image generation via NVIDIA Flux | `./ai image cyber frog in pond` |
+| `./ruby` | `on/off/status` | Turn Ruby's private-chat away replies on or off, or check status | `./ruby on` |
 | `./yt` | `audio\|video <url\|title>` | Download audio as voice note, or video up to 720p. Title mode shows a 5-option picker. | `./yt audio never gonna give you up` |
 | `./status` | None | View OS RAM, uptime, and engine health | `./status` |
 | `./session` | None | Export/sync session keys to avoid scanning QR again | `./session` |
-| `./suite` | `[on/off]` | Pause/resume the engine (the `./track` command remains available while paused) | `./suite off` |
+| `./suite` | `[on/off]` | Pause/resume the engine (persists across restarts) | `./suite off` |
 | `./help` or `./menu` | None | Display interactive command menu | `./help` |
 
 ---
