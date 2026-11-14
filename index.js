@@ -956,9 +956,9 @@ async function startSuite() {
             getMessage: async (key) => {
                 if (!key || !key.id) return undefined;
                 const cached = global.msgCache?.get(key.id);
-                if (!cached) return undefined;
-                if (cached.message) return cached.message;
-                return cached;
+                // Only ever return a real proto Message. Returning the whole
+                // WebMessageInfo (or nothing usable) makes the retry arrive blank.
+                return cached?.message || undefined;
             }
         });
 
@@ -966,21 +966,21 @@ async function startSuite() {
         const _origSendMessage = sock.sendMessage.bind(sock);
         sock.sendMessage = async (jid, content, options) => {
             const normJid = jid ? jidNormalizedUser(jid) : jid;
+            // Never send (or edit to) an empty text bubble. Log where it came
+            // from so the caller can be fixed, and skip the send.
+            if (content && typeof content === 'object' && 'text' in content &&
+                !content.image && !content.video && !content.document && !content.sticker && !content.audio &&
+                (typeof content.text !== 'string' || !content.text.trim())) {
+                console.warn(`[SEND] Blocked empty ${content.edit ? 'edit' : 'message'} to ${normJid}`, new Error().stack.split('\n').slice(2, 5).join(' | '));
+                return undefined;
+            }
             const sent = await _origSendMessage(normJid, content, options);
+            // Cache what we actually sent so retry requests (phone couldn't decrypt)
+            // can be answered. Edits are their own messages with their own ids; the
+            // original's cache entry must stay untouched, or a retry for it would
+            // resend a malformed message that shows up blank.
             if (sent && sent.key && sent.key.id) {
                 safeCacheMessage(sent.key.id, sent);
-                const editKey = content?.edit || content?.protocolMessage?.key;
-                if (editKey && editKey.id) {
-                    const targetMsg = global.msgCache.get(editKey.id);
-                    if (targetMsg) {
-                        targetMsg.message = {
-                            conversation: typeof content.text === 'string' ? content.text : '',
-                            extendedTextMessage: { text: typeof content.text === 'string' ? content.text : '' },
-                            ...content
-                        };
-                        safeCacheMessage(editKey.id, targetMsg);
-                    }
-                }
             }
             return sent;
         };
