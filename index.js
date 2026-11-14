@@ -54,7 +54,7 @@ const { Boom } = require('@hapi/boom');
 const fs = require('fs-extra');
 const path = require('path');
 const dns = require('dns').promises;
-const qrcode = require('qrcode-terminal');
+const { printQR } = require('./lib/qr');
 const { handleMessages, _handleAntiDelete } = require('./lib/handler');
 const { isAiMessage } = require('./lib/ai');
 const axios = require('axios');
@@ -377,11 +377,15 @@ function registerSocketEvents(sock) {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr && !isConnected) {
-            console.clear();
-            console.log('╬══════════════════════════════════════╬');
-            console.log('║  Scan the QR code below to connect:  ║');
-            console.log('╚══════════════════════════════════════╝');
-            qrcode.generate(qr, { small: true });
+            // console.clear() is a no-op in non-TTY log viewers (Railway, docker logs),
+            // so only use it on a real terminal.
+            if (process.stdout.isTTY) console.clear();
+            printQR(qr, [
+                '╔══════════════════════════════════════╗',
+                '║  Scan the QR code below to connect:  ║',
+                '╚══════════════════════════════════════╝',
+                'Not scanning? Restart with QR_MODE=large for a bigger code.'
+            ].join('\n'));
         }
 
         if (connection === 'open') {
