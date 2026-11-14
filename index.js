@@ -762,8 +762,13 @@ async function exportSessionBundle() {
 
         const files = await fs.readdir(AUTH_FOLDER);
         const bundle = {};
+        // Keep the bundle small enough for an env variable: the login itself
+        // (creds.json) plus app-state keys. Signal sessions and pre-keys are
+        // renegotiated automatically and would make the bundle grow with every
+        // contact. For full persistence use a volume at /app/session_auth.
+        const keep = (f) => f === 'creds.json' || /^app-state-sync-key-.*\.json$/.test(f);
         for (const file of files) {
-            if (file.endsWith('.json')) {
+            if (keep(file)) {
                 const filePath = path.join(AUTH_FOLDER, file);
                 try {
                     bundle[file] = await fs.readJson(filePath);
@@ -780,6 +785,27 @@ async function exportSessionBundle() {
         console.error('[SESSION] Error bundling session files:', err.message);
         return null;
     }
+}
+
+// Railway GraphQL call that works with both token types:
+//   • account / team tokens  → Authorization: Bearer <token>
+//   • project tokens         → Project-Access-Token: <token>
+async function railwayGraphql(token, query, variables, timeout = 15000) {
+    const attempt = (headers) => axios.post('https://backboard.railway.com/graphql/v2', { query, variables }, {
+        headers: { 'Content-Type': 'application/json', ...headers },
+        timeout,
+        validateStatus: () => true
+    });
+    const notAuthorized = (res) => res.status === 401 || res.status === 403 ||
+        (res.data?.errors || []).some(e => /not authori[sz]ed|unauthori[sz]ed/i.test(e?.message || ''));
+
+    let res = await attempt({ Authorization: `Bearer ${token}` });
+    if (notAuthorized(res)) res = await attempt({ 'Project-Access-Token': token });
+    if (res.status >= 400 || res.data?.errors?.length) {
+        const detail = res.data?.errors?.map(e => e.message).join('; ') || `HTTP ${res.status}`;
+        throw new Error(detail);
+    }
+    return res.data?.data;
 }
 
 async function deleteRailwaySessionVariable() {
@@ -803,16 +829,7 @@ async function deleteRailwaySessionVariable() {
                 name: 'SESSION_DATA'
             }
         };
-        await axios.post('https://backboard.railway.com/graphql/v2', {
-            query,
-            variables
-        }, {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
-            },
-            timeout: 10000
-        });
+        await railwayGraphql(token, query, variables, 10000);
         console.log('[RAILWAY] Removed stale SESSION_DATA variable from Railway.');
     } catch (_) {}
 }
@@ -848,29 +865,29 @@ async function syncSessionAfterScan(targetSock, isManual = false) {
                     environmentId,
                     serviceId: serviceId || undefined,
                     name: 'SESSION_DATA',
-                    value: base64Data
+                    value: base64Data,
+                    // Saving the variable must not redeploy: a redeploy would start a
+                    // second instance on the same session while this one is live.
+                    skipDeploys: true
                 }
             };
-            const res = await axios.post('https://backboard.railway.com/graphql/v2', {
-                query,
-                variables
-            }, {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json'
-                },
-                timeout: 15000
-            });
-
-            if (res.data?.data?.variableUpsert) {
+            const data = await railwayGraphql(token, query, variables);
+            if (data?.variableUpsert) {
                 syncedToRailway = true;
                 console.log('[RAILWAY] ✅ Successfully wrote SESSION_DATA to Railway variables!');
             } else {
-                console.error('[RAILWAY] API variableUpsert response:', JSON.stringify(res.data?.errors || res.data));
+                console.error('[RAILWAY] variableUpsert returned:', JSON.stringify(data));
             }
         } catch (apiErr) {
-            console.error('[RAILWAY] API request failed:', apiErr?.response?.data || apiErr.message);
+            console.error('[RAILWAY] ❌ Could not save SESSION_DATA:', apiErr.message);
         }
+    } else if (process.env.RAILWAY_ENVIRONMENT_ID || process.env.RAILWAY_PROJECT_ID || token) {
+        const missing = [
+            !token && 'RAILWAY_API_TOKEN',
+            !projectId && 'RAILWAY_PROJECT_ID',
+            !environmentId && 'RAILWAY_ENVIRONMENT_ID'
+        ].filter(Boolean).join(', ');
+        console.log(`[RAILWAY] SESSION_DATA not saved — missing: ${missing}.`);
     }
 
     const vaultJid = (await getVault()) || global.vault;
