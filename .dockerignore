@@ -18,3 +18,11 @@ env
 .env.production
 .banner
 session_auth
+# Runtime state & secrets — never bake into the image
+.git
+.gitignore
+media/*
+!media/.gitkeep
+cookies.txt
+*.cookies.txt
+.claude

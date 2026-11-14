@@ -65,7 +65,7 @@ All commands use the `./` prefix by default.
 | `./ai` | `[prompt]` | Fast concise Q&A via NVIDIA Nemotron; running without prompt shows AI status & model health | `./ai` or `./ai who was nikola tesla` |
 | `./AI` | `<prompt>` | **Stealth Q&A**: Edits message to `...` then directly outputs answer (no header) | `./AI who was nikola tesla` |
 | `./ai image` | `<prompt>` | High-resolution image generation via NVIDIA Flux | `./ai image cyber frog in pond` |
-| `./ruby` | `on/off/status` | Turn Ruby's private-chat away replies on or off, or check status | `./ruby on` |
+| `./ruby` | `on/off/status` / `group on/off` | Turn Ruby's private-chat away replies on or off, or check status. Others can only reach Ruby in private chats while it's on, or in groups enabled with `./ruby group on` (run inside the group); non-owners are rate limited | `./ruby group on` |
 | `./yt` | `audio\|video <url\|title>` | Download audio as voice note, or video up to 720p. Title mode shows a 5-option picker. | `./yt audio never gonna give you up` |
 | `./status` | None | View OS RAM, uptime, and engine health | `./status` |
 | `./session` | None | Export/sync session keys to avoid scanning QR again | `./session` |
@@ -87,6 +87,8 @@ All commands use the `./` prefix by default.
 | `RAILWAY_API_TOKEN` | *(None)* | Railway Personal Access Token. When set, the bot **automatically saves** its session into Railway variables on first QR scan! |
 | `DNS_SERVERS` | `8.8.8.8,8.8.4.4,1.1.1.1,1.0.0.1` | Comma-separated public DNS servers to resolve WhatsApp servers and bypass local DNS blocks |
 | `IPINFO_TOKEN` | *(None)* | Optional API token for [ipinfo.io](https://ipinfo.io) geolocation lookup fallback |
+| `RUBY_COOLDOWN_MS` | `10000` | Minimum gap between Ruby replies to the same non-owner sender |
+| `RUBY_HOURLY_LIMIT` | `20` | Max Ruby replies per non-owner sender per hour |
 | `YT_COOKIES_PATH` | `./cookies.txt` | Path to cookies file for YouTube downloads |
 | `YT_COOKIES` | *(None)* | YouTube cookies in any format (JSON, header string, Base64, or Netscape) |
 | `YT_PO_TOKEN` | *(None)* | Proof of Origin token for YouTube downloads on restricted VPS IPs |

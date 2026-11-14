@@ -58,7 +58,7 @@ const qrcode = require('qrcode-terminal');
 const { handleMessages, _handleAntiDelete } = require('./lib/handler');
 const { isAiMessage } = require('./lib/ai');
 const axios = require('axios');
-const { getSettings, saveSettings } = require('./lib/settings');
+const { getSettings, saveSettings, updateSettings } = require('./lib/settings');
 const { getVault } = require('./lib/vault');
 const { logMessage, formatUserLabel, isSenderMe } = require('./lib/logger');
 
@@ -520,18 +520,16 @@ function registerSocketEvents(sock) {
                     const appSettings = await getSettings();
                     const activePrefix = appSettings?.prefix || process.env.PREFIX || './';
 
-                    // ── Auto-anchor home_jid to owner's own first private-chat command ──
-                    if (!from.endsWith('@g.us') && msg.key.fromMe) {
-                        const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
-                        if (body.startsWith(activePrefix)) {
-                            try {
-                                const s = await getSettings();
-                                if (!s.home_jid) {
-                                    s.home_jid = jidNormalizedUser(from);
-                                    await saveSettings(s);
-                                }
-                            } catch (_) {}
-                        }
+                    // ── Default home_jid to the account's own chat ("Message yourself") ──
+                    // Never anchor to whatever chat the first command was typed in: that
+                    // could be a contact, and `home` output (DPs, view-once media) would
+                    // then be delivered to them. Use `./home set` to pick another chat.
+                    if (!appSettings.home_jid && sock.user?.id) {
+                        try {
+                            await updateSettings((s) => {
+                                if (!s.home_jid) s.home_jid = jidNormalizedUser(sock.user.id);
+                            });
+                        } catch (_) {}
                     }
 
                     logMessage(sock, msg).catch(() => {});
@@ -710,6 +708,14 @@ async function restoreSessionFromEnv() {
     }
 }
 
+const SESSION_KEY_TTL_MS = 2 * 60 * 1000;
+function scheduleSelfDelete(activeSock, jid, key) {
+    if (!key) return;
+    setTimeout(() => {
+        activeSock.sendMessage(jid, { delete: key }).catch(() => {});
+    }, SESSION_KEY_TTL_MS).unref?.();
+}
+
 async function exportSessionBundle() {
     try {
         const credsPath = path.join(AUTH_FOLDER, 'creds.json');
@@ -842,12 +848,22 @@ async function syncSessionAfterScan(targetSock, isManual = false) {
 
         if (activeSock && vaultJid) {
             try {
-                await activeSock.sendMessage(vaultJid, {
-                    text: '🛡️ *First Scan Completed!*\n\nTo skip scanning the QR code on future Railway deployments, either:\n\n1️⃣ *Automatic (Recommended)*: Add `RAILWAY_API_TOKEN` to your Railway variables so the bot auto-saves its session directly.\n2️⃣ *Railway Volume*: Attach a Persistent Volume mounted at `/app/session_auth`.\n3️⃣ *Manual*: Set `SESSION_DATA` in Railway variables with the key below:'
-                });
-                await activeSock.sendMessage(vaultJid, {
-                    text: base64Data
-                });
+                if (!isManual) {
+                    // Never push the session key into chat unprompted — it is a full
+                    // account-takeover credential and chat history is backed up.
+                    await activeSock.sendMessage(vaultJid, {
+                        text: '🛡️ *First Scan Completed!*\n\nTo skip scanning the QR code on future Railway deployments, either:\n\n1️⃣ *Automatic (Recommended)*: Add `RAILWAY_API_TOKEN` to your Railway variables so the bot auto-saves its session directly.\n2️⃣ *Railway Volume*: Attach a Persistent Volume mounted at `/app/session_auth`.\n3️⃣ *Manual*: Send `./session` to get a one-time key for `SESSION_DATA` (it self-deletes after 2 minutes).'
+                    });
+                } else {
+                    // Key always goes to the account's own chat, never a configurable vault/home.
+                    const selfJid = activeSock.user?.id ? jidNormalizedUser(activeSock.user.id) : null;
+                    if (!selfJid) return { syncedToRailway, base64Data };
+                    await activeSock.sendMessage(selfJid, {
+                        text: '🔐 *Session key below* — copy it into `SESSION_DATA` now. Anyone with this text can take over your WhatsApp. Both messages delete themselves in 2 minutes.'
+                    }).then((warn) => scheduleSelfDelete(activeSock, selfJid, warn?.key));
+                    const keyMsg = await activeSock.sendMessage(selfJid, { text: base64Data });
+                    scheduleSelfDelete(activeSock, selfJid, keyMsg?.key);
+                }
             } catch (_) {}
         }
     }
