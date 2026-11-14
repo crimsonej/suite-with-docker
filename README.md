@@ -46,6 +46,8 @@ npm start
 
 *Scan the generated QR code in your terminal using WhatsApp (Linked Devices).*
 
+**Can't scan the QR?** (e.g. on Railway, whose log viewer breaks QR codes into stripes) Set `PAIRING_NUMBER` to your WhatsApp number (country code first, digits only) and redeploy. The logs will show an 8-character pairing code. On your phone: WhatsApp → *Linked devices* → *Link a device* → *Link with phone number instead*, then type the code in.
+
 ---
 
 ## 📜 Command Reference
@@ -87,6 +89,8 @@ All commands use the `./` prefix by default.
 | `RAILWAY_API_TOKEN` | *(None)* | Railway Personal Access Token. When set, the bot **automatically saves** its session into Railway variables on first QR scan! |
 | `DNS_SERVERS` | `8.8.8.8,8.8.4.4,1.1.1.1,1.0.0.1` | Comma-separated public DNS servers to resolve WhatsApp servers and bypass local DNS blocks |
 | `IPINFO_TOKEN` | *(None)* | Optional API token for [ipinfo.io](https://ipinfo.io) geolocation lookup fallback |
+| `PAIRING_NUMBER` | *(None)* | Your WhatsApp number (digits, country code first). When set, login uses an 8-character pairing code instead of a QR |
+| `QR_MODE` | `small` | `large` prints a bigger QR for log viewers with line gaps |
 | `RUBY_COOLDOWN_MS` | `10000` | Minimum gap between Ruby replies to the same non-owner sender |
 | `RUBY_HOURLY_LIMIT` | `20` | Max Ruby replies per non-owner sender per hour |
 | `YT_COOKIES_PATH` | `./cookies.txt` | Path to cookies file for YouTube downloads |

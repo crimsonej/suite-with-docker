@@ -8,6 +8,7 @@ services:
     environment:
       - NODE_ENV=production
       - DNS_SERVERS=8.8.8.8,8.8.4.4,1.1.1.1,1.0.0.1
+      # - PAIRING_NUMBER=2348012345678
       # - NVIDIA_API_KEY=
       # - NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
       # - NVIDIA_AI_MODEL=nvidia/nemotron-3-ultra-550b-a55b

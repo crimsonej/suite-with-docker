@@ -48,8 +48,24 @@ const {
     fetchLatestBaileysVersion,
     getContentType,
     downloadContentFromMessage,
-    jidNormalizedUser
+    jidNormalizedUser,
+    Browsers
 } = require('@whiskeysockets/baileys');
+
+// ── Pairing-code login ──
+// Set PAIRING_NUMBER (international format, digits only, e.g. 2348012345678) to
+// log in with an 8-character code instead of scanning a QR. Use this wherever
+// the log viewer can't render a QR (e.g. Railway's web logs).
+const PAIRING_NUMBER = (() => {
+    const digits = (process.env.PAIRING_NUMBER || '').replace(/\D/g, '');
+    if (!digits) return '';
+    if (digits.length < 8 || digits.length > 15) {
+        console.error(`[PAIRING] PAIRING_NUMBER "${process.env.PAIRING_NUMBER}" is not a valid international number (8–15 digits, country code first). Falling back to QR.`);
+        return '';
+    }
+    return digits;
+})();
+let _pairingRequestedFor = null; // socket instance we already asked a code for
 const { Boom } = require('@hapi/boom');
 const fs = require('fs-extra');
 const path = require('path');
@@ -376,7 +392,26 @@ function registerSocketEvents(sock) {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        if (qr && !isConnected) {
+        if (qr && !isConnected && PAIRING_NUMBER && !sock.authState?.creds?.registered) {
+            // One code per socket: WhatsApp keeps re-emitting `qr` refs, but the
+            // pairing code stays valid for the life of this connection attempt.
+            if (_pairingRequestedFor !== sock) {
+                _pairingRequestedFor = sock;
+                try {
+                    const code = await sock.requestPairingCode(PAIRING_NUMBER);
+                    const pretty = code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
+                    console.log('');
+                    console.log('╔══════════════════════════════════════╗');
+                    console.log(`║   PAIRING CODE:  ${pretty.padEnd(20)}║`);
+                    console.log('╚══════════════════════════════════════╝');
+                    console.log(`[PAIRING] For +${PAIRING_NUMBER}: WhatsApp → Linked devices → Link a device →`);
+                    console.log('[PAIRING] "Link with phone number instead" → enter the code above.');
+                } catch (err) {
+                    _pairingRequestedFor = null;
+                    console.error('[PAIRING] Could not request a pairing code:', err.message);
+                }
+            }
+        } else if (qr && !isConnected) {
             // console.clear() is a no-op in non-TTY log viewers (Railway, docker logs),
             // so only use it on a real terminal.
             if (process.stdout.isTTY) console.clear();
@@ -914,7 +949,9 @@ async function startSuite() {
             defaultQueryTimeoutMs: 60000,
             keepAliveIntervalMs: 25000,
             emitOwnEvents: true,
-            browser: [process.env.BOT_NAME || 'Suites', 'Chrome', '10.0.0'],
+            // WhatsApp rejects pairing-code logins from unrecognised browser
+            // strings, so use a standard one when pairing by phone number.
+            browser: PAIRING_NUMBER ? Browsers.ubuntu('Chrome') : [process.env.BOT_NAME || 'Suites', 'Chrome', '10.0.0'],
             transactionOpts: { maxCommitRetries: 5, delayBetweenTriesMs: 2000 },
             getMessage: async (key) => {
                 if (!key || !key.id) return undefined;
