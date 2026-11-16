@@ -64,11 +64,14 @@ All commands use the `./` prefix by default.
 | `./investigate` | `[url]` + `[image\|summary]`, or *(Reply)* | Screenshot + metadata summary of any URL | `./investigate https://example.com image` |
 | `./s` | *(Reply to image/video)* | Convert media into square WebP sticker | `./s` |
 | `./s ./ai image` | `<prompt>` | **Stacked Pipe**: Generate AI image and directly output as a sticker | `./s ./ai image a green frog` |
+| `./ai clear` | None | Reset Ruby's conversation memory for this chat | `./ai clear` |
+| `./search` / `./google` | `<query>` | Live web search with an AI-summarised answer | `./search latest node lts` |
 | `./ai` | `[prompt]` | Fast concise Q&A via NVIDIA Nemotron; running without prompt shows AI status & model health | `./ai` or `./ai who was nikola tesla` |
 | `./AI` | `<prompt>` | **Stealth Q&A**: Edits message to `...` then directly outputs answer (no header) | `./AI who was nikola tesla` |
 | `./ai image` | `<prompt>` | High-resolution image generation via NVIDIA Flux | `./ai image cyber frog in pond` |
 | `./ruby` | `on/off/status` / `group on/off` | Turn Ruby's private-chat away replies on or off, or check status. Others can only reach Ruby in private chats while it's on, or in groups enabled with `./ruby group on` (run inside the group); non-owners are rate limited | `./ruby group on` |
 | `./yt` | `audio\|video <url\|title>` | Download audio as voice note, or video up to 720p. Title mode shows a 5-option picker. | `./yt audio never gonna give you up` |
+| `./home` | `[on/off/status]` | Set this chat as the destination for `home` output (e.g. `./dp home`, `./<> home`); defaults to your own chat | `./home` |
 | `./status` | None | View OS RAM, uptime, and engine health | `./status` |
 | `./session` | None | Export/sync session keys to avoid scanning QR again | `./session` |
 | `./online` | `[on/off]` | Keep your account showing as online while the bot is connected. Off by default, because WhatsApp stops phone notifications while it's on | `./online on` |
