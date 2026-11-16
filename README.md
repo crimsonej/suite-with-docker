@@ -71,6 +71,7 @@ All commands use the `./` prefix by default.
 | `./yt` | `audio\|video <url\|title>` | Download audio as voice note, or video up to 720p. Title mode shows a 5-option picker. | `./yt audio never gonna give you up` |
 | `./status` | None | View OS RAM, uptime, and engine health | `./status` |
 | `./session` | None | Export/sync session keys to avoid scanning QR again | `./session` |
+| `./online` | `[on/off]` | Keep your account showing as online while the bot is connected. Off by default, because WhatsApp stops phone notifications while it's on | `./online on` |
 | `./suite` | `[on/off]` | Pause/resume the engine (persists across restarts) | `./suite off` |
 | `./help` or `./menu` | None | Display interactive command menu | `./help` |
 

@@ -71,6 +71,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const dns = require('dns').promises;
 const { printQR } = require('./lib/qr');
+const { applyPresence, stopRefresh: stopPresenceRefresh } = require('./lib/presence');
 const { handleMessages, _handleAntiDelete } = require('./lib/handler');
 const { isAiMessage } = require('./lib/ai');
 const axios = require('axios');
@@ -222,6 +223,7 @@ function isBadMacError(err) {
 
 async function cleanupSocket() {
     if (!sock) return;
+    stopPresenceRefresh();
     try { sock.ev.removeAllListeners(); } catch (_) {}
     try { sock.ws?.terminate?.() || sock.ws?.close?.(); } catch (_) {}
     try { sock.end?.(); } catch (_) {}
@@ -429,6 +431,12 @@ function registerSocketEvents(sock) {
             isConnected   = true;
             global.vault  = jidNormalizedUser(sock.user.id);
             global.connectionTime = Date.now();
+
+            // Always-online is opt-in (./online on). Baileys already reported
+            // 'unavailable' on connect; only switch to 'available' if enabled.
+            getSettings().then((s) => {
+                if (s.always_online) return applyPresence(sock, true);
+            }).catch(() => {});
 
             // Clear stale state from previous session to prevent old operations
             const now = Date.now();
@@ -956,7 +964,11 @@ async function startSuite() {
             qrTimeout: 3600000,
             syncFullHistory: false,
             shouldSyncHistoryMessage: () => false,
-            markOnlineOnConnect: true,
+            // Must stay false: while any linked device reports the account as
+            // "online", WhatsApp stops sending push notifications to the phone.
+            // With false, Baileys reports this device as 'unavailable' on connect.
+            // Owners who want it can opt in with ./online on.
+            markOnlineOnConnect: false,
             generateHighQualityLinkPreview: false,
             msgRetryCounterCache,
             msgRetryCounter: 5,
