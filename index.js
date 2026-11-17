@@ -432,11 +432,10 @@ function registerSocketEvents(sock) {
             global.vault  = jidNormalizedUser(sock.user.id);
             global.connectionTime = Date.now();
 
-            // Always-online is opt-in (./online on). Baileys already reported
-            // 'unavailable' on connect; only switch to 'available' if enabled.
-            getSettings().then((s) => {
-                if (s.always_online) return applyPresence(sock, true);
-            }).catch(() => {});
+            // Start the presence heartbeat for whichever mode is saved. For the
+            // default (off) this keeps re-asserting 'unavailable' so the phone
+            // keeps getting notifications even though the bot stays connected.
+            getSettings().then((s) => applyPresence(sock, !!s.always_online)).catch(() => {});
 
             // Clear stale state from previous session to prevent old operations
             const now = Date.now();
